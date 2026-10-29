@@ -1,0 +1,14 @@
+# The Voice Labs firmware (voice-labs.yaml) flashed from a checkout: Wi-Fi from
+# secrets.yaml (wifi_ssid, wifi_password), and the name given on the command
+# line for any satellite after the first:
+#
+#   esphome run voice-labs-local.yaml --device <ip>
+#   esphome -s name voice-labs-vpe-2 -s friendly_name "Voice Labs VPE 2" run voice-labs-local.yaml
+#
+# An early prototype VPE has 8 MB of flash, not 16: add -s flash_size 8MB.
+packages:
+  voice-labs: !include voice-labs.yaml
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password

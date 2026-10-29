@@ -1,0 +1,38 @@
+# The Voice Labs firmware (voice-labs.yaml) as the install page builds it: Wi-Fi
+# given over improv -- Bluetooth, with the center button to authorize, or USB --
+# and a name of its own from its MAC. The Voice Labs app finds it on the network.
+packages:
+  voice-labs: !include voice-labs.yaml
+
+esphome:
+  # Must match the base config's name: ESPHome builds into .esphome/build/<name>/,
+  # and ewt-gen reads `name` from THIS file to find firmware.factory.bin.
+  name: voice-labs-vpe
+  name_add_mac_suffix: true
+  project:
+    name: OHF-Voice.Voice Labs VPE
+    version: dev
+
+wifi:
+  on_connect:
+    - delay: 5s  # Gives time for improv results to be transmitted
+    - ble.disable:
+  on_disconnect:
+    - ble.enable:
+
+improv_serial:
+
+esp32_ble:
+  name: voice-labs  # at most 13 characters
+
+improv_ble:
+  authorizer: center_button
+  on_start:
+    - lambda: id(improv_ble_in_progress) = true;
+    - script.execute: control_leds
+  on_provisioned:
+    - lambda: id(improv_ble_in_progress) = false;
+    - script.execute: control_leds
+  on_stop:
+    - lambda: id(improv_ble_in_progress) = false;
+    - script.execute: control_leds
