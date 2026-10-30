@@ -33,9 +33,12 @@ static constexpr uint8_t FEATURE_DURATION_MS = 30;
 /// long it is muted after one. Matches micro_wake_word.
 static constexpr uint8_t MIN_SLICES_BEFORE_DETECTION = 100;
 
-/// The VAD gate, the wake words a satellite listens for, and "stop" while a
-/// timer rings.
+/// The VAD gate, the wake words a satellite listens for, and "stop".
 static constexpr uint8_t MAX_MODEL_SLOTS = 6;
+
+/// The model that is not a wake word: "stop", said alone. It runs only while
+/// armed (``set_stop_armed``), so it stays loaded at no cost the rest of the time.
+static constexpr const char *STOP_MODEL_ID = "stop";
 
 /// What a model heard since the last report, for someone listening live.
 struct ModelReport {
@@ -99,6 +102,8 @@ struct WakeModel {
   MixedNetBlob parsed;
   /// On the wake microphone.
   ModelStream stream;
+  /// Fed and asked; off for "stop" while it is not armed.
+  bool enabled{true};
 
   uint8_t peak_since_log{0};
   /// Highest since the last report (``take_report``): each inference's
@@ -142,6 +147,10 @@ class WakeDetector {
   bool finish_model(std::string *error);
   void abort_model();
   void clear_models();
+
+  /// Run "stop" or not, now and when it is pushed later. Armed afresh, it
+  /// waits out MIN_SLICES_BEFORE_DETECTION before it may fire.
+  void set_stop_armed(bool armed);
 
   /// Pops one detection, or returns false. Called from the main loop.
   bool take_detection(Detection *out);
@@ -187,6 +196,7 @@ class WakeDetector {
   Mutex models_lock_;
   std::vector<std::unique_ptr<WakeModel>> models_;
   size_t loaded_count_{0};
+  bool stop_armed_{false};
 
   // Staging for an in-flight transfer; only touched from the main loop.
   ModelConfig staging_config_;

@@ -14,14 +14,20 @@
 # The LED ring follows the call through the app's events, in the identified
 # speaker's color (see "LED ring" below). Between calls it blinks red while the
 # app streams the microphone for someone listening live (its Test page), flashes
-# while a timer rings, and otherwise shows the time left on the timer that
-# finishes soonest.
+# while a timer rings, shows the time left on the timer that finishes soonest,
+# and otherwise two red LEDs while the mute switch cuts the microphones off.
+#
+# The center button, pressed with nothing to stop or pause, starts a call (press
+# to talk). "Stop", said alone, ends a response being said and stops a ringing
+# timer, as in the stock firmware: the app keeps the model loaded, and it runs
+# only then (listen_for_stop).
 #
 # Music: a Sendspin client (see "Music" below), so Music Assistant finds the
 # device and plays to it; the app controls it through Music Assistant's player.
 # Music is turned down -- never paused -- during a call and while a timer rings,
 # and the center button pauses and resumes it (or stops a ringing timer). The
-# dial sets the volume, the ring showing it, and the app's speech follows.
+# dial sets the volume, the ring showing it, and the app's speech follows. With
+# a speaker on the headphone jack, music keeps Sendspin's saved delay for it.
 #
 # The intercom (the app's "connect to the kitchen") streams the microphone to
 # another satellite and plays it: wake words go unanswered, the ring blinks,
@@ -174,6 +180,21 @@ globals:
     type: bool
     restore_value: no
     initial_value: 'false'
+  # The call's response is being said: "stop" ends it (listen_for_stop).
+  - id: responding
+    type: bool
+    restore_value: no
+    initial_value: 'false'
+  # The headphone jack was plugged in or pulled out in the last second: the
+  # ring sweeps up or down.
+  - id: jack_plugged_recently
+    type: bool
+    restore_value: no
+    initial_value: 'false'
+  - id: jack_unplugged_recently
+    type: bool
+    restore_value: no
+    initial_value: 'false'
 
 switch:
   - platform: gpio
@@ -233,15 +254,45 @@ sensor:
                 increase_volume: false
 
 binary_sensor:
-  # Physical mute slider on the side of the device.
+  # Physical mute slider on the side of the device: it cuts the microphones off
+  # itself. The ring shows it.
   - platform: gpio
     id: hardware_mute_switch
     name: "Hardware mute"
     pin: GPIO3
-  # Center button: ends the intercom; else stops a ringing timer. Otherwise it
-  # pauses the music when it is playing, and resumes it on the next press
-  # (Music Assistant pauses the whole Sendspin group). Held while the dial
-  # turns, it is the group's volume instead (see "dial").
+    on_press:
+      - script.execute: control_leds
+    on_release:
+      - script.execute: control_leds
+  # The headphone jack, as in the stock firmware: with a speaker on it, music
+  # keeps the delay Sendspin saved for it; the ring sweeps down as it goes in
+  # and up as it comes out. Debounced: plugging it in can flicker.
+  - platform: gpio
+    id: jack_plugged
+    internal: true
+    pin: GPIO17
+    filters:
+      - delayed_on: 200ms
+      - delayed_off: 200ms
+    on_press:
+      - sendspin.media_source.enable_static_delay_adjustment:
+      - lambda: id(jack_plugged_recently) = true;
+      - script.execute: control_leds
+      - delay: 1s
+      - lambda: id(jack_plugged_recently) = false;
+      - script.execute: control_leds
+    on_release:
+      - sendspin.media_source.disable_static_delay_adjustment:
+      - lambda: id(jack_unplugged_recently) = true;
+      - script.execute: control_leds
+      - delay: 1s
+      - lambda: id(jack_unplugged_recently) = false;
+      - script.execute: control_leds
+  # Center button: ends the intercom; else stops a ringing timer; else ends the
+  # call. Otherwise it pauses the music when it is playing, and resumes it on
+  # the next press (Music Assistant pauses the whole Sendspin group); with
+  # neither, it starts a call, unless the microphones are muted. Held while the
+  # dial turns, it is the group's volume instead (see "dial").
   - platform: gpio
     id: center_button
     internal: true
@@ -273,6 +324,7 @@ binary_sensor:
                           # whatever is being announced here at once.
                           - voice_labs.send_event: stop_timer
                           - lambda: id(timer_ringing) = false;
+                          - script.execute: listen_for_stop
                           - if:
                               condition:
                                 media_player.is_announcing: external_media_player
@@ -312,6 +364,13 @@ binary_sensor:
                                           then:
                                             - media_player.play: sendspin_group_media_player
                                             - lambda: id(music_paused_by_button) = false;
+                                          else:
+                                            # Press to talk.
+                                            - if:
+                                                condition:
+                                                  binary_sensor.is_off: hardware_mute_switch
+                                                then:
+                                                  - voice_labs.start: manual
 
 ota:
   - platform: esphome
@@ -321,6 +380,14 @@ wifi:
   id: wifi_id
   on_connect:
     - script.execute: control_leds
+    # A speaker already on the jack at boot keeps its delay too.
+    - if:
+        condition:
+          binary_sensor.is_on: jack_plugged
+        then:
+          - sendspin.media_source.enable_static_delay_adjustment:
+        else:
+          - sendspin.media_source.disable_static_delay_adjustment:
   on_disconnect:
     - script.execute: control_leds
 
@@ -573,11 +640,12 @@ script:
   # What the ring shows, as the stock firmware does first: Wi-Fi being given
   # over Bluetooth, a warm white sparkle; starting up, a
   # blue sparkle once on Wi-Fi (solid warm white before); after, a red
-  # sparkle while Wi-Fi or the app is lost. Else the volume while the dial
-  # turns; else a call's own (its events drive it during one); else between
-  # calls the intercom, else someone listening live, else another
-  # satellite's announcement, else a ringing timer, else the time left on
-  # the timer that finishes soonest, else nothing.
+  # sparkle while Wi-Fi or the app is lost. Else, for a moment, the jack
+  # going in or out; else the volume while the dial turns; else a call's own
+  # (its events drive it during one); else between calls the intercom, else
+  # someone listening live, else another satellite's announcement, else a
+  # ringing timer, else the time left on the timer that finishes soonest,
+  # else muted, else nothing.
   - id: control_leds
     mode: restart
     then:
@@ -631,59 +699,90 @@ script:
                       else:
                         - if:
                             condition:
-                              lambda: return id(dial_touched);
+                              lambda: return id(jack_plugged_recently) || id(jack_unplugged_recently);
                             then:
                               - light.turn_on:
                                   id: voice_assistant_leds
                                   brightness: ${ring_brightness}
-                                  effect: "Volume Display"
+                                  effect: !lambda 'return id(jack_plugged_recently) ? "Jack Plugged" : "Jack Unplugged";'
                             else:
                               - if:
                                   condition:
-                                    lambda: return id(call_active);
+                                    lambda: return id(dial_touched);
                                   then:
                                     - light.turn_on:
                                         id: voice_assistant_leds
                                         brightness: ${ring_brightness}
-                                        effect: !lambda return id(call_effect);
+                                        effect: "Volume Display"
                                   else:
                                     - if:
                                         condition:
-                                          lambda: return id(vc).is_monitoring();
+                                          lambda: return id(call_active);
                                         then:
                                           - light.turn_on:
                                               id: voice_assistant_leds
                                               brightness: ${ring_brightness}
-                                              effect: !lambda 'return id(vc).is_intercom() ? "Intercom" : "Recording";'
+                                              effect: !lambda return id(call_effect);
                                         else:
                                           - if:
                                               condition:
-                                                lambda: return id(app_announcing);
+                                                lambda: return id(vc).is_monitoring();
                                               then:
                                                 - light.turn_on:
                                                     id: voice_assistant_leds
                                                     brightness: ${ring_brightness}
-                                                    effect: "Replying"
+                                                    effect: !lambda 'return id(vc).is_intercom() ? "Intercom" : "Recording";'
                                               else:
                                                 - if:
                                                     condition:
-                                                      lambda: return id(timer_ringing);
+                                                      lambda: return id(app_announcing);
                                                     then:
                                                       - light.turn_on:
                                                           id: voice_assistant_leds
                                                           brightness: ${ring_brightness}
-                                                          effect: "Timer Ring"
+                                                          effect: "Replying"
                                                     else:
                                                       - if:
                                                           condition:
-                                                            lambda: return id(timer_shown);
+                                                            lambda: return id(timer_ringing);
                                                           then:
                                                             - light.turn_on:
                                                                 id: voice_assistant_leds
                                                                 brightness: ${ring_brightness}
-                                                                effect: "Timer Tick"
+                                                                effect: "Timer Ring"
                                                           else:
-                                                            - light.turn_off: voice_assistant_leds
+                                                            - if:
+                                                                condition:
+                                                                  lambda: return id(timer_shown);
+                                                                then:
+                                                                  - light.turn_on:
+                                                                      id: voice_assistant_leds
+                                                                      brightness: ${ring_brightness}
+                                                                      effect: "Timer Tick"
+                                                                else:
+                                                                  - if:
+                                                                      condition:
+                                                                        binary_sensor.is_on: hardware_mute_switch
+                                                                      then:
+                                                                        - light.turn_on:
+                                                                            id: voice_assistant_leds
+                                                                            brightness: ${ring_brightness}
+                                                                            effect: "Muted"
+                                                                      else:
+                                                                        - light.turn_off: voice_assistant_leds
+
+  # "Stop", said alone, is listened for while a response is said and while a
+  # timer rings, as the stock firmware does: in a call it ends the call
+  # (on_stop_word); outside one, the app takes it as stopping the timer.
+  - id: listen_for_stop
+    then:
+      - if:
+          condition:
+            lambda: return id(responding) || id(timer_ringing);
+          then:
+            - voice_labs.enable_stop_word:
+          else:
+            - voice_labs.disable_stop_word:
 
   # Music down while a call is open, a timer rings, something is announced or
   # the intercom is on; back up when none is.
@@ -758,7 +857,10 @@ voice_labs:
         brightness: ${ring_brightness}
         effect: "Listening For Command"
   on_call_end:
-    - lambda: id(call_active) = false;
+    - lambda: |-
+        id(call_active) = false;
+        id(responding) = false;
+    - script.execute: listen_for_stop
     - script.execute: duck_music
     - logger.log:
         format: "Call ended: %s"
@@ -797,6 +899,7 @@ voice_labs:
           lambda: 'return event_type == "timer_ringing" || event_type == "timer_stopped";'
         then:
           - lambda: id(timer_ringing) = event_type == "timer_ringing";
+          - script.execute: listen_for_stop
           - script.execute: duck_music
           - script.execute: control_leds
     # Someone started or stopped listening live: the component's own event,
@@ -855,6 +958,25 @@ voice_labs:
               id: voice_assistant_leds
               brightness: ${ring_brightness}
               effect: "Replying"
+    # The response: "stop" may end it from here on. The model waits out its
+    # first second, as the stock firmware's stop word starts a second in.
+    - if:
+        condition:
+          lambda: 'return event_type == "responding";'
+        then:
+          - lambda: id(responding) = true;
+          - script.execute: listen_for_stop
+  # "Stop" said over the response: as the center button, the call ends and
+  # what it is saying is cut off.
+  on_stop_word:
+    - voice_labs.cancel:
+    - if:
+        condition:
+          media_player.is_announcing: external_media_player
+        then:
+          - media_player.stop:
+              id: external_media_player
+              announcement: true
   on_connected:
     # Detection starts on its own once the app finishes pushing a model.
     - logger.log: "Home Assistant connected"
@@ -1074,6 +1196,51 @@ light:
             for (uint8_t i = 0; i < 12; i++) {
               it[i] = color;
             }
+      # The mute switch cuts the microphones off: two red LEDs, left and right
+      # (the stock firmware's "Muted or Silent").
+      - addressable_lambda:
+          name: "Muted"
+          update_interval: 100ms
+          lambda: |-
+            for (uint8_t i = 0; i < 12; i++) {
+              it[i] = Color::BLACK;
+            }
+            it[3] = Color(255, 0, 0);
+            it[9] = Color(255, 0, 0);
+      # The jack going in: two LEDs sweep from the top down to the bottom;
+      # coming out, back up (as the stock firmware).
+      - addressable_lambda:
+          name: "Jack Plugged"
+          update_interval: 40ms
+          lambda: |-
+            static uint8_t index = 0;
+            if (initial_run) {
+              index = 0;
+            }
+            const int rgb = ${default_ring_rgb};
+            const Color color((rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF);
+            if (index <= 6) {
+              for (uint8_t i = 0; i < 12; i++) {
+                it[i] = (i == index || i == (12 - index) % 12) ? color : Color::BLACK;
+              }
+            }
+            index++;
+      - addressable_lambda:
+          name: "Jack Unplugged"
+          update_interval: 40ms
+          lambda: |-
+            static uint8_t index = 0;
+            if (initial_run) {
+              index = 0;
+            }
+            const int rgb = ${default_ring_rgb};
+            const Color color((rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF);
+            if (index <= 6) {
+              for (uint8_t i = 0; i < 12; i++) {
+                it[i] = (i == 6 - index || i == (6 + index) % 12) ? color : Color::BLACK;
+              }
+            }
+            index++;
       # Anticlockwise spin: the response is playing.
       - addressable_lambda:
           name: "Replying"

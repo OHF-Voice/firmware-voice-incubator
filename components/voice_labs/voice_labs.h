@@ -129,6 +129,11 @@ class VoiceLabs : public Component {
   /// other satellite at once, and tell the app (``intercom_end``), which ends
   /// it on that one too.
   void end_intercom();
+  /// Listen for "stop" said alone, or no longer. The configuration arms it
+  /// while a response is said and while a timer rings. Heard in a call, it
+  /// fires ``on_stop_word``; outside one, it starts a call the app takes as
+  /// stopping the timer.
+  void set_stop_word_armed(bool armed) { this->wake_detector_.set_stop_armed(armed); }
   /// True once the app has pushed at least one wake word model.
   bool has_wake_models() const { return this->wake_detector_.has_models(); }
   bool is_connected() const { return this->client_ != nullptr; }
@@ -139,6 +144,7 @@ class VoiceLabs : public Component {
   Trigger<> *get_connected_trigger() { return &this->connected_trigger_; }
   Trigger<> *get_disconnected_trigger() { return &this->disconnected_trigger_; }
   Trigger<std::string> *get_model_loaded_trigger() { return &this->model_loaded_trigger_; }
+  Trigger<> *get_stop_word_trigger() { return &this->stop_word_trigger_; }
 
  protected:
   void accept_client_();
@@ -248,6 +254,7 @@ class VoiceLabs : public Component {
   Trigger<> connected_trigger_;
   Trigger<> disconnected_trigger_;
   Trigger<std::string> model_loaded_trigger_;
+  Trigger<> stop_word_trigger_;
 };
 
 template<typename... Ts> class StartCallAction : public Action<Ts...>, public Parented<VoiceLabs> {
@@ -270,6 +277,15 @@ template<typename... Ts> class CancelCallAction : public Action<Ts...>, public P
 template<typename... Ts> class EndIntercomAction : public Action<Ts...>, public Parented<VoiceLabs> {
  public:
   void play(const Ts &...x) override { this->parent_->end_intercom(); }
+};
+
+template<typename... Ts> class StopWordAction : public Action<Ts...>, public Parented<VoiceLabs> {
+ public:
+  explicit StopWordAction(bool armed) : armed_(armed) {}
+  void play(const Ts &...x) override { this->parent_->set_stop_word_armed(this->armed_); }
+
+ protected:
+  bool armed_;
 };
 
 template<typename... Ts> class SendEventAction : public Action<Ts...>, public Parented<VoiceLabs> {

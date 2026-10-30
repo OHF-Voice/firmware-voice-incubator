@@ -32,6 +32,7 @@ CONF_ON_CONNECTED = "on_connected"
 CONF_ON_DISCONNECTED = "on_disconnected"
 CONF_ON_EVENT = "on_event"
 CONF_ON_MODEL_LOADED = "on_model_loaded"
+CONF_ON_STOP_WORD = "on_stop_word"
 CONF_OUTPUT_BUFFER = "output_buffer"
 CONF_PREROLL = "preroll"
 CONF_STATUS_INTERVAL = "status_interval"
@@ -52,6 +53,7 @@ StartCallAction = voice_labs_ns.class_("StartCallAction", automation.Action)
 EndCallAction = voice_labs_ns.class_("EndCallAction", automation.Action)
 CancelCallAction = voice_labs_ns.class_("CancelCallAction", automation.Action)
 SendEventAction = voice_labs_ns.class_("SendEventAction", automation.Action)
+StopWordAction = voice_labs_ns.class_("StopWordAction", automation.Action)
 EndIntercomAction = voice_labs_ns.class_("EndIntercomAction", automation.Action)
 IsInCallCondition = voice_labs_ns.class_("IsInCallCondition", automation.Condition)
 IsConnectedCondition = voice_labs_ns.class_("IsConnectedCondition", automation.Condition)
@@ -118,6 +120,8 @@ CONFIG_SCHEMA = cv.Schema(
         cv.Optional(CONF_ON_CONNECTED): automation.validate_automation(single=True),
         cv.Optional(CONF_ON_DISCONNECTED): automation.validate_automation(single=True),
         cv.Optional(CONF_ON_MODEL_LOADED): automation.validate_automation(single=True),
+        # "Stop" heard in a call, while armed (voice_labs.enable_stop_word).
+        cv.Optional(CONF_ON_STOP_WORD): automation.validate_automation(single=True),
     }
 ).extend(cv.COMPONENT_SCHEMA)
 
@@ -228,6 +232,11 @@ async def to_code(config):
             config[CONF_ON_MODEL_LOADED],
         )
 
+    if CONF_ON_STOP_WORD in config:
+        await automation.build_automation(
+            var.get_stop_word_trigger(), [], config[CONF_ON_STOP_WORD]
+        )
+
 
 VOICE_LABS_ACTION_SCHEMA = cv.Schema({cv.GenerateID(): cv.use_id(VoiceLabs)})
 
@@ -297,6 +306,24 @@ async def end_call_action_to_code(config, action_id, template_arg, args):
 )
 async def cancel_call_action_to_code(config, action_id, template_arg, args):
     var = cg.new_Pvariable(action_id, template_arg)
+    await cg.register_parented(var, config[CONF_ID])
+    return var
+
+
+@automation.register_action(
+    "voice_labs.enable_stop_word", StopWordAction, VOICE_LABS_ACTION_SCHEMA, synchronous=True
+)
+async def enable_stop_word_action_to_code(config, action_id, template_arg, args):
+    var = cg.new_Pvariable(action_id, template_arg, True)
+    await cg.register_parented(var, config[CONF_ID])
+    return var
+
+
+@automation.register_action(
+    "voice_labs.disable_stop_word", StopWordAction, VOICE_LABS_ACTION_SCHEMA, synchronous=True
+)
+async def disable_stop_word_action_to_code(config, action_id, template_arg, args):
+    var = cg.new_Pvariable(action_id, template_arg, False)
     await cg.register_parented(var, config[CONF_ID])
     return var
 

@@ -309,6 +309,9 @@ void VoiceLabs::accept_client_() {
     // capture with it; and be joined to another satellite by the intercom.
     root["monitor"] = true;
     root["intercom"] = true;
+    // "stop" can stay loaded: it runs only while armed here (a response, a
+    // ringing timer), and heard in a call it ends the call.
+    root["stop_word"] = true;
     if (this->monitor_aec_ring_ != nullptr)
       root["monitor_aec"] = true;
     if (this->aec_lead_samples_ >= 0)
@@ -554,6 +557,13 @@ void VoiceLabs::poll_wake_detector_() {
       // Someone is listening, not talking to it: say so, don't answer.
       ESP_LOGI(TAG, "Wake word detected while monitored, not answered: %s", detection.wake_word.c_str());
       this->monitored_detections_.push_back(detection.model_id);
+      continue;
+    }
+    if (detection.model_id == STOP_MODEL_ID && this->in_call_) {
+      // Said over a response: the configuration ends it, as the button does.
+      ESP_LOGI(TAG, "Stop word detected in a call (average %u, max %u, cutoff %u)", detection.average, detection.max,
+               detection.cutoff);
+      this->stop_word_trigger_.trigger();
       continue;
     }
     ESP_LOGI(TAG, "Wake word detected: %s (average %u, max %u, cutoff %u)", detection.wake_word.c_str(),

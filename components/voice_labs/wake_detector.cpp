@@ -185,6 +185,7 @@ bool WakeDetector::finish_model(std::string *error) {
   const std::string &id = model->config.id;
   {
     LockGuard guard(this->models_lock_);
+    model->enabled = id != STOP_MODEL_ID || this->stop_armed_;
     auto existing = std::find_if(this->models_.begin(), this->models_.end(),
                                  [&id](const std::unique_ptr<WakeModel> &m) { return m->config.id == id; });
     if (existing != this->models_.end()) {
@@ -211,6 +212,19 @@ void WakeDetector::clear_models() {
   LockGuard guard(this->models_lock_);
   this->models_.clear();
   this->loaded_count_ = 0;
+}
+
+void WakeDetector::set_stop_armed(bool armed) {
+  LockGuard guard(this->models_lock_);
+  this->stop_armed_ = armed;
+  for (auto &model : this->models_) {
+    if (model->config.id != STOP_MODEL_ID || model->enabled == armed)
+      continue;
+    // What it last heard is long gone: start over, and wait out the guard.
+    if (armed)
+      model->reset_probabilities();
+    model->enabled = armed;
+  }
 }
 
 size_t WakeDetector::total_arena_size() const {
@@ -288,6 +302,8 @@ void WakeDetector::take_report(std::vector<ModelReport> *out) {
   out->clear();
   LockGuard guard(this->models_lock_);
   for (auto &model : this->models_) {
+    if (!model->enabled)
+      continue;
     ModelReport report;
     report.id = model->config.id;
     report.is_vad = model->config.is_vad;
@@ -375,6 +391,8 @@ void WakeDetector::process_features_(const int8_t *features) {
   bool voice_detected = true;
   bool have_vad = false;
   for (auto &model : this->models_) {
+    if (!model->enabled)
+      continue;
     model->feed(features);
     auto &stream = model->stream;
     if (model->config.is_vad) {
@@ -402,7 +420,7 @@ void WakeDetector::process_features_(const int8_t *features) {
 
   for (size_t i = 0; i < this->models_.size(); i++) {
     auto &model = this->models_[i];
-    if (model->config.is_vad || !model->stream.fresh)
+    if (!model->enabled || model->config.is_vad || !model->stream.fresh)
       continue;
     if (!model->detected())
       continue;
