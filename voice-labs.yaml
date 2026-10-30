@@ -49,6 +49,11 @@ substitutions:
   volume_max: "0.85"
   # A production VPE has 16 MB; early prototypes 8 MB (-s flash_size 8MB).
   flash_size: 16MB
+  # The stock firmware's sounds, as of its 26.9.0 release.
+  mute_switch_on_sound_file: https://github.com/esphome/home-assistant-voice-pe/raw/26.9.0/sounds/mute_switch_on.flac
+  mute_switch_off_sound_file: https://github.com/esphome/home-assistant-voice-pe/raw/26.9.0/sounds/mute_switch_off.flac
+  jack_connected_sound_file: https://github.com/esphome/home-assistant-voice-pe/raw/26.9.0/sounds/jack_connected.flac
+  jack_disconnected_sound_file: https://github.com/esphome/home-assistant-voice-pe/raw/26.9.0/sounds/jack_disconnected.flac
 
 esphome:
   name: ${name}
@@ -195,6 +200,12 @@ globals:
     type: bool
     restore_value: no
     initial_value: 'false'
+  # One of this satellite's own sounds is playing (play_sound): an
+  # announcement the app is not told about.
+  - id: playing_sound
+    type: bool
+    restore_value: no
+    initial_value: 'false'
 
 switch:
   - platform: gpio
@@ -255,18 +266,25 @@ sensor:
 
 binary_sensor:
   # Physical mute slider on the side of the device: it cuts the microphones off
-  # itself. The ring shows it.
+  # itself. The ring shows it, and the stock firmware's sounds say it.
   - platform: gpio
     id: hardware_mute_switch
     name: "Hardware mute"
     pin: GPIO3
     on_press:
       - script.execute: control_leds
+      - script.execute:
+          id: play_sound
+          sound_file: mute_switch_on_sound
     on_release:
       - script.execute: control_leds
+      - script.execute:
+          id: play_sound
+          sound_file: mute_switch_off_sound
   # The headphone jack, as in the stock firmware: with a speaker on it, music
   # keeps the delay Sendspin saved for it; the ring sweeps down as it goes in
-  # and up as it comes out. Debounced: plugging it in can flicker.
+  # and up as it comes out, with its sounds. Debounced: plugging it in can
+  # flicker.
   - platform: gpio
     id: jack_plugged
     internal: true
@@ -278,14 +296,22 @@ binary_sensor:
       - sendspin.media_source.enable_static_delay_adjustment:
       - lambda: id(jack_plugged_recently) = true;
       - script.execute: control_leds
-      - delay: 1s
+      - delay: 200ms
+      - script.execute:
+          id: play_sound
+          sound_file: jack_connected_sound
+      - delay: 800ms
       - lambda: id(jack_plugged_recently) = false;
       - script.execute: control_leds
     on_release:
       - sendspin.media_source.disable_static_delay_adjustment:
       - lambda: id(jack_unplugged_recently) = true;
       - script.execute: control_leds
-      - delay: 1s
+      - delay: 200ms
+      - script.execute:
+          id: play_sound
+          sound_file: jack_disconnected_sound
+      - delay: 800ms
       - lambda: id(jack_unplugged_recently) = false;
       - script.execute: control_leds
   # Center button: ends the intercom; else stops a ringing timer; else ends the
@@ -529,6 +555,19 @@ media_source:
   - platform: audio_http
     id: http_announcement_source
     buffer_size: 250000
+  # This satellite's own sounds (audio_file below), played as announcements.
+  - platform: audio_file
+    id: audio_file_announcement_source
+
+audio_file:
+  - id: mute_switch_on_sound
+    file: ${mute_switch_on_sound_file}
+  - id: mute_switch_off_sound
+    file: ${mute_switch_off_sound_file}
+  - id: jack_connected_sound
+    file: ${jack_connected_sound_file}
+  - id: jack_disconnected_sound
+    file: ${jack_disconnected_sound_file}
 
 media_player:
   - platform: sendspin
@@ -544,6 +583,7 @@ media_player:
       sample_rate: 48000
       speaker: announcement_resampling_speaker
       sources:
+        - audio_file_announcement_source
         - http_announcement_source
     media_pipeline:
       format: FLAC
@@ -563,9 +603,15 @@ media_player:
       - script.execute: sync_call_volume
     on_unmute:
       - script.execute: sync_call_volume
+    # The app hears when an announcement starts and ends -- not this
+    # satellite's own sounds, which it did not ask for.
     on_announcement:
-      - lambda: id(announcing) = true;
-      - voice_labs.send_event: announcing
+      - if:
+          condition:
+            lambda: return !id(playing_sound);
+          then:
+            - lambda: id(announcing) = true;
+            - voice_labs.send_event: announcing
       - script.execute: duck_music
     on_state:
       - if:
@@ -577,6 +623,15 @@ media_player:
           then:
             - lambda: id(announcing) = false;
             - voice_labs.send_event: announced
+            - script.execute: duck_music
+      - if:
+          condition:
+            and:
+              - lambda: return id(playing_sound);
+              - not:
+                  media_player.is_announcing: external_media_player
+          then:
+            - lambda: id(playing_sound) = false;
             - script.execute: duck_music
 
 script:
@@ -771,6 +826,40 @@ script:
                                                                       else:
                                                                         - light.turn_off: voice_assistant_leds
 
+  # One of this satellite's own sounds (an audio_file id), as the stock firmware
+  # plays them: an announcement, the music turned down meanwhile -- unless
+  # something is already being announced, which it would cut off.
+  - id: play_sound
+    mode: restart
+    parameters:
+      sound_file: string
+    then:
+      - if:
+          condition:
+            not:
+              media_player.is_announcing: external_media_player
+          then:
+            - lambda: |-
+                id(playing_sound) = true;
+                id(external_media_player)
+                  ->make_call()
+                  .set_media_url("audio-file://" + sound_file)
+                  .set_announcement(true)
+                  .perform();
+            # One that never started leaves nothing for on_state to clear, and
+            # the next announcement would go untold.
+            - wait_until:
+                condition:
+                  media_player.is_announcing: external_media_player
+                timeout: 1s
+            - if:
+                condition:
+                  not:
+                    media_player.is_announcing: external_media_player
+                then:
+                  - lambda: id(playing_sound) = false;
+                  - script.execute: duck_music
+
   # "Stop", said alone, is listened for while a response is said and while a
   # timer rings, as the stock firmware does: in a call it ends the call
   # (on_stop_word); outside one, the app takes it as stopping the timer.
@@ -791,7 +880,7 @@ script:
     then:
       - if:
           condition:
-            lambda: return id(call_active) || id(timer_ringing) || id(announcing) || id(app_announcing) || id(vc).is_intercom();
+            lambda: return id(call_active) || id(timer_ringing) || id(announcing) || id(playing_sound) || id(app_announcing) || id(vc).is_intercom();
           then:
             - mixer_speaker.apply_ducking:
                 id: media_mixing_input
