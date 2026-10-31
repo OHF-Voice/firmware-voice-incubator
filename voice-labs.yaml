@@ -15,7 +15,11 @@
 # speaker's color (see "LED ring" below). Between calls it blinks red while the
 # app streams the microphone for someone listening live (its Test page), flashes
 # while a timer rings, shows the time left on the timer that finishes soonest,
-# and otherwise two red LEDs while the mute switch cuts the microphones off.
+# shows two red LEDs while muted, and otherwise the LED Ring light if it is on.
+#
+# Home Assistant sees the Mute switch and the LED Ring light, as with the stock
+# firmware: muted (from there or with the slider on the side), the microphones
+# give silence; the ring's color and brightness are the light's.
 #
 # The center button, pressed with nothing to stop or pause, starts a call (press
 # to talk). "Stop", said alone, ends a response being said and stops a ringing
@@ -40,9 +44,11 @@
 substitutions:
   name: voice-labs-vpe
   friendly_name: Voice Labs VPE
-  # Ring color when no speaker is recognized: the stock VPE ring default.
-  default_ring_rgb: "0x18BBF2"
-  ring_brightness: "66%"
+  # The ring's displays take the LED Ring light's color (as 0xRRGGBB; a
+  # recognized speaker's in a call) and its brightness, at least 20%, as the
+  # stock firmware's do.
+  ring_rgb: "(int(id(led_ring).current_values.get_red() * 255) << 16 | int(id(led_ring).current_values.get_green() * 255) << 8 | int(id(led_ring).current_values.get_blue() * 255))"
+  ring_brightness: "return std::max(id(led_ring).current_values.get_brightness(), 0.2f);"
   # The speaker volume the media player's 0-100% maps to: the onboard amp
   # distorts above roughly 85%. The app's speech follows it (sync_call_volume).
   volume_min: "0.4"
@@ -208,6 +214,33 @@ globals:
     initial_value: 'false'
 
 switch:
+  # The mute switch Home Assistant sees, as in the stock firmware: on while the
+  # slider on the side is, or when turned on from Home Assistant (then only
+  # while the slider is off, which overrides it). Muted, the microphones give
+  # silence: no wake word is heard and the center button starts no call.
+  - platform: template
+    id: master_mute_switch
+    name: Mute
+    icon: "mdi:microphone-off"
+    entity_category: config
+    restore_mode: RESTORE_DEFAULT_OFF
+    lambda: return id(hardware_mute_switch).state || id(i2s_mics).get_mute_state();
+    turn_on_action:
+      - if:
+          condition:
+            binary_sensor.is_off: hardware_mute_switch
+          then:
+            - microphone.mute: i2s_mics
+    turn_off_action:
+      - if:
+          condition:
+            binary_sensor.is_off: hardware_mute_switch
+          then:
+            - microphone.unmute: i2s_mics
+    on_turn_on:
+      - script.execute: control_leds
+    on_turn_off:
+      - script.execute: control_leds
   - platform: gpio
     pin: GPIO47
     id: internal_speaker_amp
@@ -266,21 +299,26 @@ sensor:
 
 binary_sensor:
   # Physical mute slider on the side of the device: it cuts the microphones off
-  # itself. The ring shows it, and the stock firmware's sounds say it.
+  # itself, and Home Assistant sees it as the Mute switch (the ring shows it).
+  # The stock firmware's sounds say it -- going on, unless already muted from
+  # Home Assistant -- and sliding it off unmutes that too, as there.
   - platform: gpio
     id: hardware_mute_switch
-    name: "Hardware mute"
+    internal: true
     pin: GPIO3
     on_press:
-      - script.execute: control_leds
-      - script.execute:
-          id: play_sound
-          sound_file: mute_switch_on_sound
+      - if:
+          condition:
+            switch.is_off: master_mute_switch
+          then:
+            - script.execute:
+                id: play_sound
+                sound_file: mute_switch_on_sound
     on_release:
-      - script.execute: control_leds
       - script.execute:
           id: play_sound
           sound_file: mute_switch_off_sound
+      - microphone.unmute: i2s_mics
   # The headphone jack, as in the stock firmware: with a speaker on it, music
   # keeps the delay Sendspin saved for it; the ring sweeps down as it goes in
   # and up as it comes out, with its sounds. Debounced: plugging it in can
@@ -394,7 +432,7 @@ binary_sensor:
                                             # Press to talk.
                                             - if:
                                                 condition:
-                                                  binary_sensor.is_off: hardware_mute_switch
+                                                  switch.is_off: master_mute_switch
                                                 then:
                                                   - voice_labs.start: manual
 
@@ -700,7 +738,7 @@ script:
   # (its events drive it during one); else between calls the intercom, else
   # someone listening live, else another satellite's announcement, else a
   # ringing timer, else the time left on the timer that finishes soonest,
-  # else muted, else nothing.
+  # else muted, else the LED Ring light, if it is on.
   - id: control_leds
     mode: restart
     then:
@@ -710,7 +748,7 @@ script:
           then:
             - light.turn_on:
                 id: voice_assistant_leds
-                brightness: ${ring_brightness}
+                brightness: !lambda ${ring_brightness}
                 red: 100%
                 green: 89%
                 blue: 71%
@@ -726,7 +764,7 @@ script:
                       then:
                         - light.turn_on:
                             id: voice_assistant_leds
-                            brightness: ${ring_brightness}
+                            brightness: !lambda ${ring_brightness}
                             red: 9.4%
                             green: 73.3%
                             blue: 94.9%
@@ -734,7 +772,7 @@ script:
                       else:
                         - light.turn_on:
                             id: voice_assistant_leds
-                            brightness: ${ring_brightness}
+                            brightness: !lambda ${ring_brightness}
                             red: 100%
                             green: 89%
                             blue: 71%
@@ -746,7 +784,7 @@ script:
                       then:
                         - light.turn_on:
                             id: voice_assistant_leds
-                            brightness: ${ring_brightness}
+                            brightness: !lambda ${ring_brightness}
                             red: 100%
                             green: 0%
                             blue: 0%
@@ -758,7 +796,7 @@ script:
                             then:
                               - light.turn_on:
                                   id: voice_assistant_leds
-                                  brightness: ${ring_brightness}
+                                  brightness: !lambda ${ring_brightness}
                                   effect: !lambda 'return id(jack_plugged_recently) ? "Jack Plugged" : "Jack Unplugged";'
                             else:
                               - if:
@@ -767,7 +805,7 @@ script:
                                   then:
                                     - light.turn_on:
                                         id: voice_assistant_leds
-                                        brightness: ${ring_brightness}
+                                        brightness: !lambda ${ring_brightness}
                                         effect: "Volume Display"
                                   else:
                                     - if:
@@ -776,7 +814,7 @@ script:
                                         then:
                                           - light.turn_on:
                                               id: voice_assistant_leds
-                                              brightness: ${ring_brightness}
+                                              brightness: !lambda ${ring_brightness}
                                               effect: !lambda return id(call_effect);
                                         else:
                                           - if:
@@ -785,7 +823,7 @@ script:
                                               then:
                                                 - light.turn_on:
                                                     id: voice_assistant_leds
-                                                    brightness: ${ring_brightness}
+                                                    brightness: !lambda ${ring_brightness}
                                                     effect: !lambda 'return id(vc).is_intercom() ? "Intercom" : "Recording";'
                                               else:
                                                 - if:
@@ -794,7 +832,7 @@ script:
                                                     then:
                                                       - light.turn_on:
                                                           id: voice_assistant_leds
-                                                          brightness: ${ring_brightness}
+                                                          brightness: !lambda ${ring_brightness}
                                                           effect: "Replying"
                                                     else:
                                                       - if:
@@ -803,7 +841,7 @@ script:
                                                           then:
                                                             - light.turn_on:
                                                                 id: voice_assistant_leds
-                                                                brightness: ${ring_brightness}
+                                                                brightness: !lambda ${ring_brightness}
                                                                 effect: "Timer Ring"
                                                           else:
                                                             - if:
@@ -812,19 +850,24 @@ script:
                                                                 then:
                                                                   - light.turn_on:
                                                                       id: voice_assistant_leds
-                                                                      brightness: ${ring_brightness}
+                                                                      brightness: !lambda ${ring_brightness}
                                                                       effect: "Timer Tick"
                                                                 else:
                                                                   - if:
                                                                       condition:
-                                                                        binary_sensor.is_on: hardware_mute_switch
+                                                                        switch.is_on: master_mute_switch
                                                                       then:
                                                                         - light.turn_on:
                                                                             id: voice_assistant_leds
-                                                                            brightness: ${ring_brightness}
+                                                                            brightness: !lambda ${ring_brightness}
                                                                             effect: "Muted"
                                                                       else:
                                                                         - light.turn_off: voice_assistant_leds
+                                                                        - if:
+                                                                            condition:
+                                                                              light.is_on: led_ring
+                                                                            then:
+                                                                              - light.turn_on: led_ring
 
   # One of this satellite's own sounds (an audio_file id), as the stock firmware
   # plays them: an announcement, the music turned down meanwhile -- unless
@@ -943,7 +986,7 @@ voice_labs:
         id(call_effect) = "Listening For Command";
     - light.turn_on:
         id: voice_assistant_leds
-        brightness: ${ring_brightness}
+        brightness: !lambda ${ring_brightness}
         effect: "Listening For Command"
   on_call_end:
     - lambda: |-
@@ -1013,7 +1056,7 @@ voice_labs:
               then:
                 - light.turn_on:
                     id: voice_assistant_leds
-                    brightness: ${ring_brightness}
+                    brightness: !lambda ${ring_brightness}
                     effect: "Replying"
               else:
                 - script.execute: control_leds
@@ -1036,7 +1079,7 @@ voice_labs:
           - lambda: id(call_effect) = "Thinking";
           - light.turn_on:
               id: voice_assistant_leds
-              brightness: ${ring_brightness}
+              brightness: !lambda ${ring_brightness}
               effect: "Thinking"
     - if:
         condition:
@@ -1045,7 +1088,7 @@ voice_labs:
           - lambda: id(call_effect) = "Replying";
           - light.turn_on:
               id: voice_assistant_leds
-              brightness: ${ring_brightness}
+              brightness: !lambda ${ring_brightness}
               effect: "Replying"
     # The response: "stop" may end it from here on. The model waits out its
     # first second, as the stock firmware's stop word starts a second in.
@@ -1081,10 +1124,10 @@ voice_labs:
 
 # ---------------------------------------------------------------- LED ring
 #
-# Wiring and effects from the stock VPE firmware (home-assistant-voice.yaml),
-# with one change: the effects take their color from speaker_rgb -- set by the
-# app's events -- instead of the user-facing led_ring light, which this firmware
-# does not have.
+# Wiring and effects from the stock VPE firmware (home-assistant-voice.yaml):
+# the effects take their color and brightness from the user-facing LED Ring
+# light (led_ring), as there -- except during a call, where a recognized
+# speaker's color (speaker_rgb, from the app's events) takes its place.
 
 power_supply:
   - id: led_power
@@ -1126,7 +1169,7 @@ light:
           name: "Listening For Command"
           update_interval: 50ms
           lambda: |-
-            const int rgb = id(speaker_rgb) >= 0 ? id(speaker_rgb) : ${default_ring_rgb};
+            const int rgb = id(speaker_rgb) >= 0 ? id(speaker_rgb) : ${ring_rgb};
             Color color((rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF);
             for (uint8_t i = 0; i < 12; i++) {
               if (i == id(global_led_animation_index) % 12) {
@@ -1159,7 +1202,7 @@ light:
               brightness_step = 0;
               brightness_decreasing = true;
             }
-            const int rgb = id(speaker_rgb) >= 0 ? id(speaker_rgb) : ${default_ring_rgb};
+            const int rgb = id(speaker_rgb) >= 0 ? id(speaker_rgb) : ${ring_rgb};
             Color color((rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF);
             for (uint8_t i = 0; i < 12; i++) {
               if (i == id(global_led_animation_index) % 12) {
@@ -1178,7 +1221,8 @@ light:
             if (brightness_step == 0 || brightness_step == brightness_step_number) {
               brightness_decreasing = !brightness_decreasing;
             }
-      # Pulsing: a timer is ringing (the stock firmware's "Timer Ring").
+      # Pulsing: a timer is ringing (the stock firmware's "Timer Ring"), with
+      # the two red LEDs while muted.
       - addressable_lambda:
           name: "Timer Ring"
           update_interval: 10ms
@@ -1190,10 +1234,14 @@ light:
               brightness_step = 0;
               brightness_decreasing = true;
             }
-            const int rgb = ${default_ring_rgb};
+            const int rgb = ${ring_rgb};
             Color color((rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF);
             for (uint8_t i = 0; i < 12; i++) {
               it[i] = color * uint8_t(255 / brightness_step_number * (brightness_step_number - brightness_step));
+            }
+            if (id(master_mute_switch).state) {
+              it[3] = Color(255, 0, 0);
+              it[9] = Color(255, 0, 0);
             }
             if (brightness_decreasing) {
               brightness_step++;
@@ -1205,7 +1253,8 @@ light:
             }
       # The time left as a share of the ring, clockwise from the top, the last
       # LED fading as its share runs out (the stock firmware's "Timer Tick").
-      # A dimmer LED steps round once a second while the timer runs.
+      # A dimmer LED steps round once a second while the timer runs. Muted, the
+      # two red LEDs show over it.
       - addressable_lambda:
           name: "Timer Tick"
           update_interval: 100ms
@@ -1225,7 +1274,7 @@ light:
             }
             const float ratio = 12.0f * left / std::max(id(timer_total_s), 1.0f);
             const int last_on = static_cast<int>(ceilf(ratio)) - 1;
-            const int rgb = ${default_ring_rgb};
+            const int rgb = ${ring_rgb};
             Color color((rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF);
             for (int i = 0; i < 12; i++) {
               const float dip = (!id(timer_paused) && i == id(global_led_animation_index) % 12 && i != last_on) ? 0.9f : 1.0f;
@@ -1235,13 +1284,21 @@ light:
                 it[i] = Color::BLACK;
               }
             }
+            if (id(master_mute_switch).state) {
+              it[2] = Color::BLACK;
+              it[4] = Color::BLACK;
+              it[8] = Color::BLACK;
+              it[10] = Color::BLACK;
+              it[3] = Color(255, 0, 0);
+              it[9] = Color(255, 0, 0);
+            }
       # The volume, while the dial turns: as much of the ring as it is, from
       # the bottom clockwise; the bottom LED red when silent.
       - addressable_lambda:
           name: "Volume Display"
           update_interval: 50ms
           lambda: |-
-            const int rgb = ${default_ring_rgb};
+            const int rgb = ${ring_rgb};
             const Color color((rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF);
             const bool group = id(dial_group);
             const float volume = group ? id(sendspin_group_media_player).volume : id(external_media_player).volume;
@@ -1258,7 +1315,7 @@ light:
           name: "Intercom"
           update_interval: 50ms
           lambda: |-
-            const int rgb = ${default_ring_rgb};
+            const int rgb = ${ring_rgb};
             const Color on((rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF);
             const Color color = millis() % 1000 < 500 ? on : Color::BLACK;
             for (uint8_t i = 0; i < 12; i++) {
@@ -1270,7 +1327,7 @@ light:
           name: "Answered Elsewhere"
           update_interval: 50ms
           lambda: |-
-            const int rgb = ${default_ring_rgb};
+            const int rgb = ${ring_rgb};
             const Color color((rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF);
             for (uint8_t i = 0; i < 12; i++) {
               it[i] = color;
@@ -1285,15 +1342,22 @@ light:
             for (uint8_t i = 0; i < 12; i++) {
               it[i] = color;
             }
-      # The mute switch cuts the microphones off: two red LEDs, left and right
-      # (the stock firmware's "Muted or Silent").
+      # Muted: two red LEDs, left and right, over the LED Ring light if it is
+      # on (the stock firmware's "Muted or Silent").
       - addressable_lambda:
           name: "Muted"
           update_interval: 100ms
           lambda: |-
+            const int rgb = ${ring_rgb};
+            const Color color = id(led_ring).current_values.is_on()
+                ? Color((rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF) : Color::BLACK;
             for (uint8_t i = 0; i < 12; i++) {
-              it[i] = Color::BLACK;
+              it[i] = color;
             }
+            it[2] = Color::BLACK;
+            it[4] = Color::BLACK;
+            it[8] = Color::BLACK;
+            it[10] = Color::BLACK;
             it[3] = Color(255, 0, 0);
             it[9] = Color(255, 0, 0);
       # The jack going in: two LEDs sweep from the top down to the bottom;
@@ -1306,7 +1370,7 @@ light:
             if (initial_run) {
               index = 0;
             }
-            const int rgb = ${default_ring_rgb};
+            const int rgb = ${ring_rgb};
             const Color color((rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF);
             if (index <= 6) {
               for (uint8_t i = 0; i < 12; i++) {
@@ -1322,7 +1386,7 @@ light:
             if (initial_run) {
               index = 0;
             }
-            const int rgb = ${default_ring_rgb};
+            const int rgb = ${ring_rgb};
             const Color color((rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF);
             if (index <= 6) {
               for (uint8_t i = 0; i < 12; i++) {
@@ -1336,7 +1400,7 @@ light:
           update_interval: 50ms
           lambda: |-
             id(global_led_animation_index) = (12 + id(global_led_animation_index) - 1) % 12;
-            const int rgb = id(speaker_rgb) >= 0 ? id(speaker_rgb) : ${default_ring_rgb};
+            const int rgb = id(speaker_rgb) >= 0 ? id(speaker_rgb) : ${ring_rgb};
             Color color((rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF);
             for (uint8_t i = 0; i < 12; i++) {
               if (i == (id(global_led_animation_index)) % 12) {
@@ -1355,3 +1419,26 @@ light:
                 it[i] = Color::BLACK;
               }
             }
+
+  # The LED Ring light Home Assistant sees, as in the stock firmware: on, it
+  # shows when nothing else is; its color and brightness are the ring's.
+  - platform: partition
+    id: led_ring
+    name: LED Ring
+    entity_category: config
+    icon: "mdi:circle-outline"
+    default_transition_length: 0ms
+    restore_mode: RESTORE_DEFAULT_OFF
+    initial_state:
+      color_mode: rgb
+      brightness: 66%
+      red: 9.4%
+      green: 73.3%
+      blue: 94.9%
+    segments:
+      - id: leds_internal
+        from: 7
+        to: 11
+      - id: leds_internal
+        from: 0
+        to: 6
