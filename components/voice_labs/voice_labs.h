@@ -108,7 +108,9 @@ class VoiceLabs : public Component {
 
   /// Begin a call. No-op unless Home Assistant is connected and no call is active.
   /// ``detection``: what the wake word came in with, told to the app.
-  void start_call(const std::string &wake_word, const Detection *detection = nullptr);
+  /// ``preroll_ms``: how much of what was heard before it to send (negative:
+  /// the configured pre-roll).
+  void start_call(const std::string &wake_word, const Detection *detection = nullptr, int32_t preroll_ms = -1);
   void end_call(const std::string &reason);
   /// End the call now (the button), cutting off what it is playing: the app
   /// is told ``cancelled``, and audio it had already sent is not played,
@@ -145,6 +147,10 @@ class VoiceLabs : public Component {
   Trigger<> *get_disconnected_trigger() { return &this->disconnected_trigger_; }
   Trigger<std::string> *get_model_loaded_trigger() { return &this->model_loaded_trigger_; }
   Trigger<> *get_stop_word_trigger() { return &this->stop_word_trigger_; }
+  /// The app hung up wanting an answer (HANGUP ``listen``): an LLM's question,
+  /// a command's confirmation. The configuration starts the call that hears
+  /// it (wake word ``follow_up``), or doesn't (muted).
+  Trigger<> *get_listen_trigger() { return &this->listen_trigger_; }
 
  protected:
   void accept_client_();
@@ -255,12 +261,17 @@ class VoiceLabs : public Component {
   Trigger<> disconnected_trigger_;
   Trigger<std::string> model_loaded_trigger_;
   Trigger<> stop_word_trigger_;
+  Trigger<> listen_trigger_;
 };
 
 template<typename... Ts> class StartCallAction : public Action<Ts...>, public Parented<VoiceLabs> {
  public:
   TEMPLATABLE_VALUE(std::string, wake_word)
-  void play(const Ts &...x) override { this->parent_->start_call(this->wake_word_.value(x...)); }
+  TEMPLATABLE_VALUE(uint32_t, preroll)
+  void play(const Ts &...x) override {
+    const int32_t preroll = this->preroll_.has_value() ? static_cast<int32_t>(this->preroll_.value(x...)) : -1;
+    this->parent_->start_call(this->wake_word_.value(x...), nullptr, preroll);
+  }
 };
 
 template<typename... Ts> class EndCallAction : public Action<Ts...>, public Parented<VoiceLabs> {

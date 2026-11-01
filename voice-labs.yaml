@@ -21,6 +21,10 @@
 # firmware: muted (from there or with the slider on the side), the microphones
 # give silence; the ring's color and brightness are the light's.
 #
+# When the app asks something back (an LLM's question, a command's
+# confirmation), the microphone opens again for the answer once the reply has
+# played, with no wake word, the ring spinning slowly (on_listen).
+#
 # The center button, pressed with nothing to stop or pause, starts a call (press
 # to talk). "Stop", said alone, ends a response being said and stops a ringing
 # timer, as in the stock firmware: the app keeps the model loaded, and it runs
@@ -981,13 +985,15 @@ voice_labs:
     - logger.log:
         format: "Call started: %s"
         args: [wake_word.c_str()]
+    # An answer the app asked for (follow_up) spins slowly, as the stock
+    # firmware waits for a command; a wake word, fast.
     - lambda: |-
         id(speaker_rgb) = -1;
-        id(call_effect) = "Listening For Command";
+        id(call_effect) = wake_word == "follow_up" ? "Waiting for Command" : "Listening For Command";
     - light.turn_on:
         id: voice_assistant_leds
         brightness: !lambda ${ring_brightness}
-        effect: "Listening For Command"
+        effect: !lambda return id(call_effect);
   on_call_end:
     - lambda: |-
         id(call_active) = false;
@@ -1109,6 +1115,18 @@ voice_labs:
           - media_player.stop:
               id: external_media_player
               announcement: true
+  # The app asked something back -- an LLM's question, a command's
+  # confirmation -- and its reply and the sound saying it is the speaker's
+  # turn have played out: the microphone opens again for the answer, with no
+  # wake word and nothing from before it. Not while muted.
+  on_listen:
+    - if:
+        condition:
+          switch.is_off: master_mute_switch
+        then:
+          - voice_labs.start:
+              wake_word: follow_up
+              preroll: 0ms
   on_connected:
     # Detection starts on its own once the app finishes pushing a model.
     - logger.log: "Home Assistant connected"
@@ -1164,6 +1182,33 @@ light:
       - addressable_twinkle:
           name: "Twinkle"
           twinkle_probability: 50%
+      # Slow clockwise spin: the app asked something back, and the
+      # microphone is open for the answer (the stock firmware's "Waiting for
+      # Command").
+      - addressable_lambda:
+          name: "Waiting for Command"
+          update_interval: 100ms
+          lambda: |-
+            const int rgb = id(speaker_rgb) >= 0 ? id(speaker_rgb) : ${ring_rgb};
+            Color color((rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF);
+            for (uint8_t i = 0; i < 12; i++) {
+              if (i == id(global_led_animation_index) % 12) {
+                it[i] = color;
+              } else if (i == (id(global_led_animation_index) + 11) % 12) {
+                it[i] = color * 192;
+              } else if (i == (id(global_led_animation_index) + 10) % 12) {
+                it[i] = color * 128;
+              } else if (i == (id(global_led_animation_index) + 6) % 12) {
+                it[i] = color;
+              } else if (i == (id(global_led_animation_index) + 5) % 12) {
+                it[i] = color * 192;
+              } else if (i == (id(global_led_animation_index) + 4) % 12) {
+                it[i] = color * 128;
+              } else {
+                it[i] = Color::BLACK;
+              }
+            }
+            id(global_led_animation_index) = (id(global_led_animation_index) + 1) % 12;
       # Fast clockwise spin: wake word heard, command being spoken.
       - addressable_lambda:
           name: "Listening For Command"

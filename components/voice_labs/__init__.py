@@ -31,6 +31,7 @@ CONF_ON_CALL_START = "on_call_start"
 CONF_ON_CONNECTED = "on_connected"
 CONF_ON_DISCONNECTED = "on_disconnected"
 CONF_ON_EVENT = "on_event"
+CONF_ON_LISTEN = "on_listen"
 CONF_ON_MODEL_LOADED = "on_model_loaded"
 CONF_ON_STOP_WORD = "on_stop_word"
 CONF_OUTPUT_BUFFER = "output_buffer"
@@ -122,6 +123,9 @@ CONFIG_SCHEMA = cv.Schema(
         cv.Optional(CONF_ON_MODEL_LOADED): automation.validate_automation(single=True),
         # "Stop" heard in a call, while armed (voice_labs.enable_stop_word).
         cv.Optional(CONF_ON_STOP_WORD): automation.validate_automation(single=True),
+        # The app hung up wanting an answer: start the call that hears it
+        # (voice_labs.start with wake_word follow_up and no pre-roll).
+        cv.Optional(CONF_ON_LISTEN): automation.validate_automation(single=True),
     }
 ).extend(cv.COMPONENT_SCHEMA)
 
@@ -237,6 +241,11 @@ async def to_code(config):
             var.get_stop_word_trigger(), [], config[CONF_ON_STOP_WORD]
         )
 
+    if CONF_ON_LISTEN in config:
+        await automation.build_automation(
+            var.get_listen_trigger(), [], config[CONF_ON_LISTEN]
+        )
+
 
 VOICE_LABS_ACTION_SCHEMA = cv.Schema({cv.GenerateID(): cv.use_id(VoiceLabs)})
 
@@ -248,6 +257,11 @@ VOICE_LABS_ACTION_SCHEMA = cv.Schema({cv.GenerateID(): cv.use_id(VoiceLabs)})
         {
             cv.GenerateID(): cv.use_id(VoiceLabs),
             cv.Optional("wake_word", default=""): cv.templatable(cv.string),
+            # What was heard before it to send (default: the configured
+            # pre-roll); an answer the app asked for wants none.
+            cv.Optional(CONF_PREROLL): cv.templatable(
+                cv.positive_time_period_milliseconds
+            ),
         },
         key="wake_word",
     ),
@@ -258,6 +272,9 @@ async def start_call_action_to_code(config, action_id, template_arg, args):
     await cg.register_parented(var, config[CONF_ID])
     templ = await cg.templatable(config["wake_word"], args, cg.std_string)
     cg.add(var.set_wake_word(templ))
+    if CONF_PREROLL in config:
+        templ = await cg.templatable(config[CONF_PREROLL], args, cg.uint32)
+        cg.add(var.set_preroll(templ))
     return var
 
 

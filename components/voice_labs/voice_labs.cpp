@@ -312,6 +312,9 @@ void VoiceLabs::accept_client_() {
     // "stop" can stay loaded: it runs only while armed here (a response, a
     // ringing timer), and heard in a call it ends the call.
     root["stop_word"] = true;
+    // It can open the microphone again for an answer, with no wake word
+    // (HANGUP "listen": a call whose wake word is "follow_up").
+    root["listen"] = true;
     if (this->monitor_aec_ring_ != nullptr)
       root["monitor_aec"] = true;
     if (this->aec_lead_samples_ >= 0)
@@ -462,13 +465,22 @@ bool VoiceLabs::handle_frame_(MessageType type, const uint8_t *payload, size_t l
     }
     case MessageType::HANGUP: {
       std::string reason = "remote";
-      json::parse_json(payload, len, [&reason](JsonObject root) {
+      bool listen = false;
+      json::parse_json(payload, len, [&reason, &listen](JsonObject root) {
         if (root["reason"].is<const char *>()) {
           reason = root["reason"].as<std::string>();
         }
+        listen = root["listen"] | false;
         return true;
       });
       this->end_call(reason);
+      if (listen) {
+        // Its reply, and the sound saying it is the speaker's turn, have
+        // played out: the configuration opens the microphone again for the
+        // answer (or doesn't).
+        ESP_LOGI(TAG, "The app wants an answer");
+        this->listen_trigger_.trigger();
+      }
       return false;
     }
     default:
@@ -648,7 +660,7 @@ size_t VoiceLabs::trim_preroll_(ring_buffer::RingBuffer *ring, size_t target) {
   return buffered;
 }
 
-void VoiceLabs::start_call(const std::string &wake_word, const Detection *detection) {
+void VoiceLabs::start_call(const std::string &wake_word, const Detection *detection, int32_t preroll_ms) {
   if (this->client_ == nullptr) {
     ESP_LOGW(TAG, "Cannot start call: Home Assistant not connected");
     return;
@@ -670,8 +682,10 @@ void VoiceLabs::start_call(const std::string &wake_word, const Detection *detect
 
   // The rings carry headroom beyond the configured pre-roll; discard the oldest
   // audio so the call starts exactly preroll_ms back, wake word included. Both
-  // captures are trimmed to the same target so they line up.
-  const size_t preroll_target = this->preroll_ms_ * BYTE_RATE / 1000;
+  // captures are trimmed to the same target so they line up. An answer the
+  // app asked for starts now: what came before was its question.
+  const uint32_t preroll = preroll_ms >= 0 ? static_cast<uint32_t>(preroll_ms) : this->preroll_ms_;
+  const size_t preroll_target = preroll * BYTE_RATE / 1000;
   this->preroll_bytes_ = this->trim_preroll_(this->mic_ring_.get(), preroll_target);
   this->aec_preroll_bytes_ = this->trim_preroll_(this->aec_ring_.get(), preroll_target);
 
