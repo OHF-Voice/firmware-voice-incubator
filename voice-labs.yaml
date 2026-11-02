@@ -901,9 +901,10 @@ script:
                                                                 condition:
                                                                   lambda: return id(timer_shown);
                                                                 then:
+                                                                  # Two timers or more: bright enough by day to tell their colors apart.
                                                                   - light.turn_on:
                                                                       id: voice_assistant_leds
-                                                                      brightness: !lambda ${ring_brightness}
+                                                                      brightness: !lambda 'return id(night) ? 0.2f : std::max(id(led_ring).current_values.get_brightness(), id(timer_count) > 1 ? 0.5f : 0.2f);'
                                                                       effect: "Timer Tick"
                                                                 else:
                                                                   - if:
@@ -1388,7 +1389,8 @@ light:
       # The running timers, each in its color as far as it runs (the stock
       # firmware's "Timer Tick", layered): the whole ring is the longest one's
       # length, and the sooner ones lie on top, each an LED past the one
-      # before at least. An end within an LED blends into what is under it.
+      # before at least. Each LED is one timer's: an end within an LED takes
+      # it from the next half on; only the last fades out as it runs down.
       # Amber only at night. A dimmer LED steps round once a second through
       # the soonest. Muted, the two red LEDs show over it.
       - addressable_lambda:
@@ -1422,7 +1424,11 @@ light:
               const Color color((rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF);
               for (int i = 0; i < 12 && i < ends[k]; i++) {
                 const float f = std::min(ends[k] - i, 1.0f);
-                it[i] = color * uint8_t(255.0f * f) + it[i].get() * uint8_t(255.0f * (1.0f - f));
+                if (k == n - 1) {
+                  it[i] = color * uint8_t(255.0f * f);
+                } else if (f >= 0.5f) {
+                  it[i] = color;
+                }
               }
             }
             const int step = id(global_led_animation_index) % 12;
