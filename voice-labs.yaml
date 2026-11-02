@@ -14,8 +14,9 @@
 # The LED ring follows the call through the app's events, in the identified
 # speaker's color (see "LED ring" below). Between calls it blinks red while the
 # app streams the microphone for someone listening live (its Test page), flashes
-# while a timer rings, shows the time left on the timer that finishes soonest,
-# shows two red LEDs while muted, and otherwise the LED Ring light if it is on.
+# while a timer rings, shows the time left on each running timer in its own
+# color (the soonest on top), shows two red LEDs while muted, and otherwise the
+# LED Ring light if it is on.
 #
 # Home Assistant sees the Mute switch and the LED Ring light, as with the stock
 # firmware: muted (from there or with the slider on the side), the microphones
@@ -199,6 +200,26 @@ globals:
     type: uint32_t
     restore_value: no
     initial_value: '0'
+  # Every running timer, soonest first (at most six): what each had left when
+  # the event came, its color (0xRRGGBB; -1: the LED Ring light's), and the
+  # longest one's length, which the whole ring stands for. An app from
+  # before sends the soonest alone.
+  - id: timer_count
+    type: int
+    restore_value: no
+    initial_value: '0'
+  - id: timer_scale_s
+    type: float
+    restore_value: no
+    initial_value: '1'
+  - id: timer_lefts
+    type: 'std::array<float, 6>'
+    restore_value: no
+    initial_value: 'std::array<float, 6>{}'
+  - id: timer_colors
+    type: 'std::array<int, 6>'
+    restore_value: no
+    initial_value: 'std::array<int, 6>{}'
   # The center button paused the music; the next press resumes it.
   - id: music_paused_by_button
     type: bool
@@ -1138,6 +1159,12 @@ voice_labs:
               id(timer_total_s) = event_data.get_float("total", 1.0f);
               id(timer_paused) = event_data.get_int("paused") != 0;
               id(timer_received_ms) = millis();
+              id(timer_count) = std::min(event_data.get_int("count", event_data.get_int("shown")), 6);
+              id(timer_scale_s) = event_data.get_float("scale", id(timer_total_s));
+              for (int k = 0; k < id(timer_count); k++) {
+                id(timer_lefts)[k] = event_data.get_float("left" + std::to_string(k), id(timer_left_s));
+                id(timer_colors)[k] = event_data.get_int("color" + std::to_string(k), -1);
+              }
           - script.execute: control_leds
     - if:
         condition:
@@ -1358,37 +1385,49 @@ light:
               brightness_decreasing = !brightness_decreasing;
             }
       # The time left as a share of the ring, clockwise from the top, the last
-      # LED fading as its share runs out (the stock firmware's "Timer Tick").
-      # A dimmer LED steps round once a second while the timer runs. Muted, the
-      # two red LEDs show over it.
+      # The running timers, each in its color as far as it runs (the stock
+      # firmware's "Timer Tick", layered): the whole ring is the longest one's
+      # length, and the sooner ones lie on top, each an LED past the one
+      # before at least. An end within an LED blends into what is under it.
+      # Amber only at night. A dimmer LED steps round once a second through
+      # the soonest. Muted, the two red LEDs show over it.
       - addressable_lambda:
           name: "Timer Tick"
           update_interval: 100ms
           lambda: |-
             static uint32_t last_step = 0;
             const uint32_t now = millis();
-            float left = id(timer_left_s);
+            float elapsed = 0.0f;
             if (!id(timer_paused)) {
-              left -= (now - id(timer_received_ms)) / 1000.0f;
+              elapsed = (now - id(timer_received_ms)) / 1000.0f;
               if (now - last_step >= 1000) {
                 last_step = now;
                 id(global_led_animation_index) = (id(global_led_animation_index) + 1) % 12;
               }
             }
-            if (left < 0.0f) {
-              left = 0.0f;
+            const int n = id(timer_count);
+            const float scale = std::max(id(timer_scale_s), 1.0f);
+            float ends[6];
+            float before = 0.0f;
+            for (int k = 0; k < n; k++) {
+              const float left = std::max(id(timer_lefts)[k] - elapsed, 0.0f);
+              ends[k] = std::min(std::max(12.0f * left / scale, before + 1.0f), 12.0f);
+              before = ends[k];
             }
-            const float ratio = 12.0f * left / std::max(id(timer_total_s), 1.0f);
-            const int last_on = static_cast<int>(ceilf(ratio)) - 1;
-            const int rgb = ${ring_rgb};
-            Color color((rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF);
             for (int i = 0; i < 12; i++) {
-              const float dip = (!id(timer_paused) && i == id(global_led_animation_index) % 12 && i != last_on) ? 0.9f : 1.0f;
-              if (i <= ratio) {
-                it[i] = color * uint8_t(std::min(255.0f * dip * (ratio - i), 255.0f * dip));
-              } else {
-                it[i] = Color::BLACK;
+              it[i] = Color::BLACK;
+            }
+            for (int k = n - 1; k >= 0; k--) {
+              const int rgb = id(night) || id(timer_colors)[k] < 0 ? ${ring_rgb} : id(timer_colors)[k];
+              const Color color((rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF);
+              for (int i = 0; i < 12 && i < ends[k]; i++) {
+                const float f = std::min(ends[k] - i, 1.0f);
+                it[i] = color * uint8_t(255.0f * f) + it[i].get() * uint8_t(255.0f * (1.0f - f));
               }
+            }
+            const int step = id(global_led_animation_index) % 12;
+            if (n > 0 && !id(timer_paused) && step + 1 < ends[0]) {
+              it[step] = it[step].get() * uint8_t(230);
             }
             if (id(master_mute_switch).state) {
               it[2] = Color::BLACK;
