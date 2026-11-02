@@ -44,6 +44,14 @@
 # Speech from a Home Assistant TTS entity (when the app is set to use one)
 # arrives as a URL on the media player's announcement pipeline; the app hears
 # when it starts and ends through voice_labs.send_event.
+#
+# Night mode (the app's night event, from its area's switch in Home
+# Assistant): light and sound kept to a minimum. The ring is dim and warm
+# (ring_rgb, ring_brightness) and dark between calls, the LED Ring light
+# aside; how a command went shows as the call ends -- one slow green pulse
+# when it was done, two quick red blinks when it wasn't (the result event) --
+# and the satellite's own sounds (mute, the jack) don't play. A ringing timer
+# is as bright as ever. The app says nothing but answers, quietly.
 
 substitutions:
   name: voice-labs-vpe
@@ -51,8 +59,9 @@ substitutions:
   # The ring's displays take the LED Ring light's color (as 0xRRGGBB; a
   # recognized speaker's in a call) and its brightness, at least 20%, as the
   # stock firmware's do.
-  ring_rgb: "(int(id(led_ring).current_values.get_red() * 255) << 16 | int(id(led_ring).current_values.get_green() * 255) << 8 | int(id(led_ring).current_values.get_blue() * 255))"
-  ring_brightness: "return std::max(id(led_ring).current_values.get_brightness(), 0.2f);"
+  # At night, but for a ringing timer: amber, at the least brightness.
+  ring_rgb: "(id(night) && !id(timer_ringing) ? 0xFF4000 : int(id(led_ring).current_values.get_red() * 255) << 16 | int(id(led_ring).current_values.get_green() * 255) << 8 | int(id(led_ring).current_values.get_blue() * 255))"
+  ring_brightness: "return id(night) && !id(timer_ringing) ? 0.2f : std::max(id(led_ring).current_values.get_brightness(), 0.2f);"
   # The speaker volume the media player's 0-100% maps to: the onboard amp
   # distorts above roughly 85%. The app's speech follows it (sync_call_volume).
   volume_min: "0.4"
@@ -216,6 +225,25 @@ globals:
     type: bool
     restore_value: no
     initial_value: 'false'
+  # Night mode is on in the satellite's area (the app's night event).
+  - id: night
+    type: bool
+    restore_value: no
+    initial_value: 'false'
+  # How the last command went (the app's result event, at night), shown on
+  # the ring for a moment from result_started_ms (show_result).
+  - id: showing_result
+    type: bool
+    restore_value: no
+    initial_value: 'false'
+  - id: result_ok
+    type: bool
+    restore_value: no
+    initial_value: 'true'
+  - id: result_started_ms
+    type: uint32_t
+    restore_value: no
+    initial_value: '0'
 
 switch:
   # The mute switch Home Assistant sees, as in the stock firmware: on while the
@@ -814,12 +842,12 @@ script:
                                   else:
                                     - if:
                                         condition:
-                                          lambda: return id(call_active);
+                                          lambda: return id(call_active) || id(showing_result);
                                         then:
                                           - light.turn_on:
                                               id: voice_assistant_leds
                                               brightness: !lambda ${ring_brightness}
-                                              effect: !lambda return id(call_effect);
+                                              effect: !lambda 'return id(showing_result) ? "Result" : id(call_effect);'
                                         else:
                                           - if:
                                               condition:
@@ -867,15 +895,31 @@ script:
                                                                             effect: "Muted"
                                                                       else:
                                                                         - light.turn_off: voice_assistant_leds
+                                                                        # Dark at night, the LED Ring light aside.
                                                                         - if:
                                                                             condition:
-                                                                              light.is_on: led_ring
+                                                                              and:
+                                                                                - light.is_on: led_ring
+                                                                                - lambda: return !id(night);
                                                                             then:
                                                                               - light.turn_on: led_ring
 
+  # At night, how a command went, on the ring for a moment: during the call
+  # and after it, then dark again ("Result").
+  - id: show_result
+    mode: restart
+    then:
+      - lambda: |-
+          id(showing_result) = true;
+          id(result_started_ms) = millis();
+      - script.execute: control_leds
+      - delay: !lambda 'return id(result_ok) ? 1000 : 600;'
+      - lambda: id(showing_result) = false;
+      - script.execute: control_leds
+
   # One of this satellite's own sounds (an audio_file id), as the stock firmware
   # plays them: an announcement, the music turned down meanwhile -- unless
-  # something is already being announced, which it would cut off.
+  # something is already being announced, which it would cut off. Not at night.
   - id: play_sound
     mode: restart
     parameters:
@@ -883,8 +927,10 @@ script:
     then:
       - if:
           condition:
-            not:
-              media_player.is_announcing: external_media_player
+            and:
+              - not:
+                  media_player.is_announcing: external_media_player
+              - lambda: return !id(night);
           then:
             - lambda: |-
                 id(playing_sound) = true;
@@ -989,6 +1035,7 @@ voice_labs:
     # firmware waits for a command; a wake word, fast.
     - lambda: |-
         id(speaker_rgb) = -1;
+        id(showing_result) = false;
         id(call_effect) = wake_word == "follow_up" ? "Waiting for Command" : "Listening For Command";
     - light.turn_on:
         id: voice_assistant_leds
@@ -1012,7 +1059,7 @@ voice_labs:
         then:
           - light.turn_on:
               id: voice_assistant_leds
-              brightness: 25%
+              brightness: !lambda 'return id(night) ? 0.2f : 0.25f;'
               effect: "Answered Elsewhere"
           - delay: 400ms
     - script.execute: control_leds
@@ -1030,6 +1077,20 @@ voice_labs:
         } else if (event_type == "processing") {
           id(speaker_rgb) = -1;  // nobody recognized: default color
         }
+    # Night mode on or off in the satellite's area.
+    - if:
+        condition:
+          lambda: 'return event_type == "night";'
+        then:
+          - lambda: id(night) = event_data.get_bool("on");
+          - script.execute: control_leds
+    # At night, how a command went, instead of anything said.
+    - if:
+        condition:
+          lambda: 'return event_type == "result";'
+        then:
+          - lambda: id(result_ok) = event_data.get_bool("ok");
+          - script.execute: show_result
     # A ringing timer keeps the music down until it is stopped, and flashes
     # the ring.
     - if:
@@ -1189,7 +1250,7 @@ light:
           name: "Waiting for Command"
           update_interval: 100ms
           lambda: |-
-            const int rgb = id(speaker_rgb) >= 0 ? id(speaker_rgb) : ${ring_rgb};
+            const int rgb = id(speaker_rgb) >= 0 && !id(night) ? id(speaker_rgb) : ${ring_rgb};
             Color color((rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF);
             for (uint8_t i = 0; i < 12; i++) {
               if (i == id(global_led_animation_index) % 12) {
@@ -1214,7 +1275,7 @@ light:
           name: "Listening For Command"
           update_interval: 50ms
           lambda: |-
-            const int rgb = id(speaker_rgb) >= 0 ? id(speaker_rgb) : ${ring_rgb};
+            const int rgb = id(speaker_rgb) >= 0 && !id(night) ? id(speaker_rgb) : ${ring_rgb};
             Color color((rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF);
             for (uint8_t i = 0; i < 12; i++) {
               if (i == id(global_led_animation_index) % 12) {
@@ -1247,7 +1308,7 @@ light:
               brightness_step = 0;
               brightness_decreasing = true;
             }
-            const int rgb = id(speaker_rgb) >= 0 ? id(speaker_rgb) : ${ring_rgb};
+            const int rgb = id(speaker_rgb) >= 0 && !id(night) ? id(speaker_rgb) : ${ring_rgb};
             Color color((rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF);
             for (uint8_t i = 0; i < 12; i++) {
               if (i == id(global_led_animation_index) % 12) {
@@ -1377,6 +1438,21 @@ light:
             for (uint8_t i = 0; i < 12; i++) {
               it[i] = color;
             }
+      # At night, how a command went (show_result): one slow green pulse when
+      # it was done, two quick red blinks when it wasn't.
+      - addressable_lambda:
+          name: "Result"
+          update_interval: 20ms
+          lambda: |-
+            const uint32_t t = millis() - id(result_started_ms);
+            float level;
+            if (id(result_ok)) {
+              level = t < 400 ? t / 400.0f : t < 1000 ? 1.0f - (t - 400) / 600.0f : 0.0f;
+            } else {
+              level = t < 150 || (t >= 300 && t < 450) ? 1.0f : 0.0f;
+            }
+            const Color color = id(result_ok) ? Color(0, 255, 64) : Color(255, 0, 0);
+            it.all() = color * uint8_t(level * 255);
       # The whole ring blinks red: the microphone is streamed to someone
       # listening live (outside a call).
       - addressable_lambda:
@@ -1394,7 +1470,7 @@ light:
           update_interval: 100ms
           lambda: |-
             const int rgb = ${ring_rgb};
-            const Color color = id(led_ring).current_values.is_on()
+            const Color color = id(led_ring).current_values.is_on() && !id(night)
                 ? Color((rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF) : Color::BLACK;
             for (uint8_t i = 0; i < 12; i++) {
               it[i] = color;
@@ -1445,7 +1521,7 @@ light:
           update_interval: 50ms
           lambda: |-
             id(global_led_animation_index) = (12 + id(global_led_animation_index) - 1) % 12;
-            const int rgb = id(speaker_rgb) >= 0 ? id(speaker_rgb) : ${ring_rgb};
+            const int rgb = id(speaker_rgb) >= 0 && !id(night) ? id(speaker_rgb) : ${ring_rgb};
             Color color((rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF);
             for (uint8_t i = 0; i < 12; i++) {
               if (i == (id(global_led_animation_index)) % 12) {
