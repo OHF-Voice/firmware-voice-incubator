@@ -302,7 +302,11 @@ switch:
 
 logger:
 
+# The app is a satellite's client (its own protocol), so it doesn't need Home
+# Assistant's ESPHome connection: without one, ESPHome's default rebooted it
+# every 15 minutes.
 api:
+  reboot_timeout: 0s
   actions:
     - action: start_call
       then:
