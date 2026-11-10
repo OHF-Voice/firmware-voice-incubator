@@ -1,13 +1,14 @@
-# The Voice Labs firmware for the Home Assistant Voice Preview Edition: the
-# satellites of the Voice Labs app (https://github.com/OHF-Voice/voice-labs).
-# Its component is components/voice_labs. Built through a wrapper that brings
-# Wi-Fi: voice-pe-voice-labs.yaml (the install page's: improv, a name from its
-# MAC) or voice-labs-local.yaml (from a checkout: secrets.yaml).
+# Voice Incubator firmware for the Home Assistant Voice Preview Edition: the
+# satellites of the Voice Incubator app
+# (https://github.com/OHF-Voice/app-voice-incubator). Its component is
+# components/voice_incubator, which speaks PROTOCOL.md. Built through a wrapper
+# that brings Wi-Fi: voice-pe.yaml (the install page's: improv, a name from its
+# MAC) or voice-pe.local.yaml (from a checkout: secrets.yaml).
 #
-# voice_labs runs wake word detection itself, on mixednet-executor: no model is
-# compiled in, the app pushes one over the socket after connecting. It listens
-# on the XMOS AEC channel (channel 1, gain 4) and buffers and streams the AGC
-# channel (channel 0) for the call. The AEC channel is streamed too, with gain,
+# voice_incubator runs wake word detection itself, on mixednet-executor: no
+# model is compiled in, the app pushes one over the socket after connecting. It
+# listens on the XMOS AEC channel (channel 1, gain 4) and buffers and streams the
+# AGC channel (channel 0) for the call. The AEC channel is streamed too, with gain,
 # so each call yields both captures; the app identifies the speaker from it. The
 # stock voice_assistant and micro_wake_word components are intentionally absent.
 #
@@ -44,7 +45,7 @@
 #
 # Speech from a Home Assistant TTS entity (when the app is set to use one)
 # arrives as a URL on the media player's announcement pipeline; the app hears
-# when it starts and ends through voice_labs.send_event.
+# when it starts and ends through voice_incubator.send_event.
 #
 # Night mode (the app's night event, from its area's switch in Home
 # Assistant): light and sound kept to a minimum. The ring is dim and warm
@@ -55,8 +56,8 @@
 # is as bright as ever. The app says nothing but answers, quietly.
 
 substitutions:
-  name: voice-labs-vpe
-  friendly_name: Voice Labs VPE
+  name: voice-incubator-vpe
+  friendly_name: Voice Incubator VPE
   # The ring's displays take the LED Ring light's color (as 0xRRGGBB; a
   # recognized speaker's in a call) and its brightness, at least 20%, as the
   # stock firmware's do.
@@ -94,7 +95,7 @@ esphome:
             then:
               - lambda: id(init_in_progress) = false;
               - script.execute: control_leds
-    # After voice_labs's own setup, which sets its configured volume.
+    # After voice_incubator's own setup, which sets its configured volume.
     - priority: -100
       then:
         - script.execute: sync_call_volume
@@ -310,7 +311,7 @@ api:
   actions:
     - action: start_call
       then:
-        - voice_labs.start: manual
+        - voice_incubator.start: manual
 
 sensor:
   # The dial, as in the stock firmware: the volume of this satellite (its media
@@ -430,10 +431,10 @@ binary_sensor:
               then:
               - if:
                   condition:
-                    voice_labs.is_intercom:
+                    voice_incubator.is_intercom:
                   then:
                     # Ends it here at once, and the app ends it on the other.
-                    - voice_labs.end_intercom:
+                    - voice_incubator.end_intercom:
                     - script.execute: duck_music
                     - script.execute: control_leds
                   else:
@@ -443,7 +444,7 @@ binary_sensor:
                         then:
                           # The app stops the alarm and the timer; quiet the ring and
                           # whatever is being announced here at once.
-                          - voice_labs.send_event: stop_timer
+                          - voice_incubator.send_event: stop_timer
                           - lambda: id(timer_ringing) = false;
                           - script.execute: listen_for_stop
                           - if:
@@ -458,12 +459,12 @@ binary_sensor:
                         else:
                           - if:
                               condition:
-                                voice_labs.is_in_call:
+                                voice_incubator.is_in_call:
                               then:
                                 # Cancels the call and what it is saying: Piper's
                                 # audio is cut off here, and a reply Home Assistant
                                 # is announcing is stopped.
-                                - voice_labs.cancel:
+                                - voice_incubator.cancel:
                                 - if:
                                     condition:
                                       media_player.is_announcing: external_media_player
@@ -491,7 +492,7 @@ binary_sensor:
                                                 condition:
                                                   switch.is_off: master_mute_switch
                                                 then:
-                                                  - voice_labs.start: manual
+                                                  - voice_incubator.start: manual
 
 ota:
   - platform: esphome
@@ -516,7 +517,7 @@ external_components:
   - source:
       type: local
       path: components
-    components: [voice_labs]
+    components: [voice_incubator]
   - source:
       type: git
       url: https://github.com/esphome/home-assistant-voice-pe
@@ -524,15 +525,23 @@ external_components:
     components: [voice_kit]
     refresh: 0s
 
-# Home Assistant finds the device here and opens the control connection.
+# The app finds the device here and opens the control connection
+# (PROTOCOL.md). Also under the name apps from before the rename browse for,
+# until they are gone: the protocol is theirs too.
 mdns:
   services:
+    - service: "_voice-incubator"
+      protocol: _tcp
+      port: 6055
+      txt:
+        mac: !lambda 'return get_mac_address();'
+        protocol: "2"
     - service: "_voice-labs"
       protocol: _tcp
       port: 6055
       txt:
         mac: !lambda 'return get_mac_address();'
-        version: "1"
+        protocol: "2"
 
 i2c:
   - id: internal_i2c
@@ -612,7 +621,7 @@ speaker:
       - id: announcement_mixing_input
         timeout: never
 
-  # voice_labs speaks 16 kHz mono; the hardware wants 48 kHz.
+  # voice_incubator speaks 16 kHz mono; the hardware wants 48 kHz.
   - platform: resampler
     id: call_speaker
     output_speaker: call_mixing_input
@@ -706,7 +715,7 @@ media_player:
             lambda: return !id(playing_sound);
           then:
             - lambda: id(announcing) = true;
-            - voice_labs.send_event: announcing
+            - voice_incubator.send_event: announcing
       - script.execute: duck_music
     on_state:
       - if:
@@ -717,7 +726,7 @@ media_player:
                   media_player.is_announcing: external_media_player
           then:
             - lambda: id(announcing) = false;
-            - voice_labs.send_event: announced
+            - voice_incubator.send_event: announced
             - script.execute: duck_music
       - if:
           condition:
@@ -988,9 +997,9 @@ script:
           condition:
             lambda: return id(responding) || id(timer_ringing);
           then:
-            - voice_labs.enable_stop_word:
+            - voice_incubator.enable_stop_word:
           else:
-            - voice_labs.disable_stop_word:
+            - voice_incubator.disable_stop_word:
 
   # Music down while a call is open, a timer rings, something is announced or
   # the intercom is on; back up when none is.
@@ -1011,8 +1020,9 @@ script:
                 decibel_reduction: 0
                 duration: 1s
 
-voice_labs:
+voice_incubator:
   id: vc
+  model: voice-pe
   microphone:
     microphone: i2s_mics
     channels: 0
@@ -1200,7 +1210,7 @@ voice_labs:
   # "Stop" said over the response: as the center button, the call ends and
   # what it is saying is cut off.
   on_stop_word:
-    - voice_labs.cancel:
+    - voice_incubator.cancel:
     - if:
         condition:
           media_player.is_announcing: external_media_player
@@ -1217,7 +1227,7 @@ voice_labs:
         condition:
           switch.is_off: master_mute_switch
         then:
-          - voice_labs.start:
+          - voice_incubator.start:
               wake_word: follow_up
               preroll: 0ms
   on_connected:

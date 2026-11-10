@@ -1,7 +1,7 @@
-"""Experimental voice_labs component.
+"""The Voice Incubator satellite component.
 
-Streams microphone audio to a Home Assistant custom component over a plain TCP
-connection and plays back the audio it sends in return.
+Streams microphone audio to the Voice Incubator app over a plain TCP
+connection, and plays back the audio it sends in return (PROTOCOL.md).
 
 Wake word detection runs here too, on mixednet-executor rather than TFLite. No
 model is compiled in: the app pushes one over the same socket after connecting,
@@ -40,32 +40,36 @@ CONF_STATUS_INTERVAL = "status_interval"
 CONF_TASK_STACK_IN_PSRAM = "task_stack_in_psram"
 CONF_VOLUME = "volume"
 CONF_AEC_MICROPHONE = "aec_microphone"
+CONF_MODEL = "model"
 CONF_AEC_LEAD = "aec_lead"
 CONF_WAKE_MICROPHONE = "wake_microphone"
 
 # The only format the prototype speaks on the wire.
 SAMPLE_RATE = 16000
 
-voice_labs_ns = cg.esphome_ns.namespace("voice_labs")
-VoiceLabs = voice_labs_ns.class_("VoiceLabs", cg.Component)
-CallEventData = voice_labs_ns.struct("CallEventData")
+voice_incubator_ns = cg.esphome_ns.namespace("voice_incubator")
+VoiceIncubator = voice_incubator_ns.class_("VoiceIncubator", cg.Component)
+CallEventData = voice_incubator_ns.struct("CallEventData")
 
-StartCallAction = voice_labs_ns.class_("StartCallAction", automation.Action)
-EndCallAction = voice_labs_ns.class_("EndCallAction", automation.Action)
-CancelCallAction = voice_labs_ns.class_("CancelCallAction", automation.Action)
-SendEventAction = voice_labs_ns.class_("SendEventAction", automation.Action)
-StopWordAction = voice_labs_ns.class_("StopWordAction", automation.Action)
-EndIntercomAction = voice_labs_ns.class_("EndIntercomAction", automation.Action)
-IsInCallCondition = voice_labs_ns.class_("IsInCallCondition", automation.Condition)
-IsConnectedCondition = voice_labs_ns.class_("IsConnectedCondition", automation.Condition)
-IsIntercomCondition = voice_labs_ns.class_("IsIntercomCondition", automation.Condition)
+StartCallAction = voice_incubator_ns.class_("StartCallAction", automation.Action)
+EndCallAction = voice_incubator_ns.class_("EndCallAction", automation.Action)
+CancelCallAction = voice_incubator_ns.class_("CancelCallAction", automation.Action)
+SendEventAction = voice_incubator_ns.class_("SendEventAction", automation.Action)
+StopWordAction = voice_incubator_ns.class_("StopWordAction", automation.Action)
+EndIntercomAction = voice_incubator_ns.class_("EndIntercomAction", automation.Action)
+IsInCallCondition = voice_incubator_ns.class_("IsInCallCondition", automation.Condition)
+IsConnectedCondition = voice_incubator_ns.class_("IsConnectedCondition", automation.Condition)
+IsIntercomCondition = voice_incubator_ns.class_("IsIntercomCondition", automation.Condition)
 
-CallStartTrigger = voice_labs_ns.class_("CallStartTrigger", automation.Trigger.template())
+CallStartTrigger = voice_incubator_ns.class_("CallStartTrigger", automation.Trigger.template())
 
 
 CONFIG_SCHEMA = cv.Schema(
     {
-        cv.GenerateID(): cv.declare_id(VoiceLabs),
+        cv.GenerateID(): cv.declare_id(VoiceIncubator),
+        # What the device is, told to the app (PROTOCOL.md: HELLO "model"):
+        # voice-pe, box-3, ...
+        cv.Optional(CONF_MODEL): cv.All(cv.string_strict, cv.Length(min=1, max=32)),
         # Buffered and streamed to the app. Passive: the wake word source below
         # is what actually keeps the microphone running.
         cv.Required(CONF_MICROPHONE): microphone.microphone_source_schema(
@@ -121,18 +125,18 @@ CONFIG_SCHEMA = cv.Schema(
         cv.Optional(CONF_ON_CONNECTED): automation.validate_automation(single=True),
         cv.Optional(CONF_ON_DISCONNECTED): automation.validate_automation(single=True),
         cv.Optional(CONF_ON_MODEL_LOADED): automation.validate_automation(single=True),
-        # "Stop" heard in a call, while armed (voice_labs.enable_stop_word).
+        # "Stop" heard in a call, while armed (voice_incubator.enable_stop_word).
         cv.Optional(CONF_ON_STOP_WORD): automation.validate_automation(single=True),
         # The app hung up wanting an answer: start the call that hears it
-        # (voice_labs.start with wake_word follow_up and no pre-roll).
+        # (voice_incubator.start with wake_word follow_up and no pre-roll).
         cv.Optional(CONF_ON_LISTEN): automation.validate_automation(single=True),
     }
 ).extend(cv.COMPONENT_SCHEMA)
 
 
 def _consume_sockets(config):
-    socket.consume_sockets(1, "voice_labs", socket.SocketType.TCP_LISTEN)(config)
-    socket.consume_sockets(1, "voice_labs")(config)
+    socket.consume_sockets(1, "voice_incubator", socket.SocketType.TCP_LISTEN)(config)
+    socket.consume_sockets(1, "voice_incubator")(config)
     return config
 
 
@@ -140,13 +144,13 @@ FINAL_VALIDATE_SCHEMA = cv.All(
     cv.Schema(
         {
             cv.Required(CONF_MICROPHONE): microphone.final_validate_microphone_source_schema(
-                "voice_labs", sample_rate=SAMPLE_RATE
+                "voice_incubator", sample_rate=SAMPLE_RATE
             ),
             cv.Required(CONF_WAKE_MICROPHONE): microphone.final_validate_microphone_source_schema(
-                "voice_labs", sample_rate=SAMPLE_RATE
+                "voice_incubator", sample_rate=SAMPLE_RATE
             ),
             cv.Optional(CONF_AEC_MICROPHONE): microphone.final_validate_microphone_source_schema(
-                "voice_labs", sample_rate=SAMPLE_RATE
+                "voice_incubator", sample_rate=SAMPLE_RATE
             ),
         },
         extra=cv.ALLOW_EXTRA,
@@ -197,6 +201,8 @@ async def to_code(config):
     cg.add(var.set_call_timeout_ms(config[CONF_CALL_TIMEOUT].total_milliseconds))
     cg.add(var.set_status_interval_ms(config[CONF_STATUS_INTERVAL].total_milliseconds))
     cg.add(var.set_volume(config[CONF_VOLUME]))
+    if CONF_MODEL in config:
+        cg.add(var.set_model(config[CONF_MODEL]))
 
     if CONF_ON_CALL_START in config:
         await automation.build_automation(
@@ -247,15 +253,15 @@ async def to_code(config):
         )
 
 
-VOICE_LABS_ACTION_SCHEMA = cv.Schema({cv.GenerateID(): cv.use_id(VoiceLabs)})
+VOICE_INCUBATOR_ACTION_SCHEMA = cv.Schema({cv.GenerateID(): cv.use_id(VoiceIncubator)})
 
 
 @automation.register_action(
-    "voice_labs.start",
+    "voice_incubator.start",
     StartCallAction,
     cv.maybe_simple_value(
         {
-            cv.GenerateID(): cv.use_id(VoiceLabs),
+            cv.GenerateID(): cv.use_id(VoiceIncubator),
             cv.Optional("wake_word", default=""): cv.templatable(cv.string),
             # What was heard before it to send (default: the configured
             # pre-roll); an answer the app asked for wants none.
@@ -279,11 +285,11 @@ async def start_call_action_to_code(config, action_id, template_arg, args):
 
 
 @automation.register_action(
-    "voice_labs.send_event",
+    "voice_incubator.send_event",
     SendEventAction,
     cv.maybe_simple_value(
         {
-            cv.GenerateID(): cv.use_id(VoiceLabs),
+            cv.GenerateID(): cv.use_id(VoiceIncubator),
             cv.Required("type"): cv.templatable(cv.string),
         },
         key="type",
@@ -299,11 +305,11 @@ async def send_event_action_to_code(config, action_id, template_arg, args):
 
 
 @automation.register_action(
-    "voice_labs.end",
+    "voice_incubator.end",
     EndCallAction,
     cv.maybe_simple_value(
         {
-            cv.GenerateID(): cv.use_id(VoiceLabs),
+            cv.GenerateID(): cv.use_id(VoiceIncubator),
             cv.Optional("reason", default="device"): cv.templatable(cv.string),
         },
         key="reason",
@@ -319,7 +325,7 @@ async def end_call_action_to_code(config, action_id, template_arg, args):
 
 
 @automation.register_action(
-    "voice_labs.cancel", CancelCallAction, VOICE_LABS_ACTION_SCHEMA, synchronous=True
+    "voice_incubator.cancel", CancelCallAction, VOICE_INCUBATOR_ACTION_SCHEMA, synchronous=True
 )
 async def cancel_call_action_to_code(config, action_id, template_arg, args):
     var = cg.new_Pvariable(action_id, template_arg)
@@ -328,7 +334,7 @@ async def cancel_call_action_to_code(config, action_id, template_arg, args):
 
 
 @automation.register_action(
-    "voice_labs.enable_stop_word", StopWordAction, VOICE_LABS_ACTION_SCHEMA, synchronous=True
+    "voice_incubator.enable_stop_word", StopWordAction, VOICE_INCUBATOR_ACTION_SCHEMA, synchronous=True
 )
 async def enable_stop_word_action_to_code(config, action_id, template_arg, args):
     var = cg.new_Pvariable(action_id, template_arg, True)
@@ -337,7 +343,7 @@ async def enable_stop_word_action_to_code(config, action_id, template_arg, args)
 
 
 @automation.register_action(
-    "voice_labs.disable_stop_word", StopWordAction, VOICE_LABS_ACTION_SCHEMA, synchronous=True
+    "voice_incubator.disable_stop_word", StopWordAction, VOICE_INCUBATOR_ACTION_SCHEMA, synchronous=True
 )
 async def disable_stop_word_action_to_code(config, action_id, template_arg, args):
     var = cg.new_Pvariable(action_id, template_arg, False)
@@ -346,7 +352,7 @@ async def disable_stop_word_action_to_code(config, action_id, template_arg, args
 
 
 @automation.register_condition(
-    "voice_labs.is_in_call", IsInCallCondition, VOICE_LABS_ACTION_SCHEMA
+    "voice_incubator.is_in_call", IsInCallCondition, VOICE_INCUBATOR_ACTION_SCHEMA
 )
 async def is_in_call_to_code(config, condition_id, template_arg, args):
     var = cg.new_Pvariable(condition_id, template_arg)
@@ -355,7 +361,7 @@ async def is_in_call_to_code(config, condition_id, template_arg, args):
 
 
 @automation.register_condition(
-    "voice_labs.is_connected", IsConnectedCondition, VOICE_LABS_ACTION_SCHEMA
+    "voice_incubator.is_connected", IsConnectedCondition, VOICE_INCUBATOR_ACTION_SCHEMA
 )
 async def is_connected_to_code(config, condition_id, template_arg, args):
     var = cg.new_Pvariable(condition_id, template_arg)
@@ -364,7 +370,7 @@ async def is_connected_to_code(config, condition_id, template_arg, args):
 
 
 @automation.register_action(
-    "voice_labs.end_intercom", EndIntercomAction, VOICE_LABS_ACTION_SCHEMA, synchronous=True
+    "voice_incubator.end_intercom", EndIntercomAction, VOICE_INCUBATOR_ACTION_SCHEMA, synchronous=True
 )
 async def end_intercom_action_to_code(config, action_id, template_arg, args):
     var = cg.new_Pvariable(action_id, template_arg)
@@ -373,7 +379,7 @@ async def end_intercom_action_to_code(config, action_id, template_arg, args):
 
 
 @automation.register_condition(
-    "voice_labs.is_intercom", IsIntercomCondition, VOICE_LABS_ACTION_SCHEMA
+    "voice_incubator.is_intercom", IsIntercomCondition, VOICE_INCUBATOR_ACTION_SCHEMA
 )
 async def is_intercom_to_code(config, condition_id, template_arg, args):
     var = cg.new_Pvariable(condition_id, template_arg)

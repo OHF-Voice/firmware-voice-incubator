@@ -1,0 +1,17 @@
+# Voice Incubator firmware for the Voice PE (devices/voice-pe.yaml) flashed from
+# a checkout: Wi-Fi from secrets.yaml (wifi_ssid, wifi_password), and the name
+# given on the command line for any satellite after the first:
+#
+#   esphome run voice-pe.local.yaml --device <ip>
+#   esphome -s name voice-incubator-vpe-2 -s friendly_name "Voice Incubator VPE 2" run voice-pe.local.yaml
+#
+# A satellite flashed before the rename keeps its name with -s name (e.g.
+# voice-labs-vpe): Home Assistant's ESPHome integration knows it by it.
+#
+# An early prototype VPE has 8 MB of flash, not 16: add -s flash_size 8MB.
+packages:
+  device: !include devices/voice-pe.yaml
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password

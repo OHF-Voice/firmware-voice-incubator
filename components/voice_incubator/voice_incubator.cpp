@@ -1,4 +1,4 @@
-#include "voice_labs.h"
+#include "voice_incubator.h"
 
 #include "esphome/components/json/json_util.h"
 #include "esphome/components/network/util.h"
@@ -6,6 +6,7 @@
 #include "esphome/core/application.h"
 #include "esphome/core/hal.h"
 #include "esphome/core/log.h"
+#include "esphome/core/version.h"
 
 #include <cerrno>
 #include <cinttypes>
@@ -13,9 +14,9 @@
 #include <cstring>
 #include <utility>
 
-namespace esphome::voice_labs {
+namespace esphome::voice_incubator {
 
-static const char *const TAG = "voice_labs";
+static const char *const TAG = "voice_incubator";
 
 /// Keeps a stalled socket from growing the outgoing queue without bound.
 static constexpr size_t TX_BUFFER_LIMIT = 16384;
@@ -54,7 +55,7 @@ bool CallEventData::get_bool(const std::string &key, bool default_value) const {
   return it->second == "true" || it->second == "1";
 }
 
-void VoiceLabs::setup() {
+void VoiceIncubator::setup() {
   // Headroom above the pre-roll so a slow loop does not immediately overwrite
   // audio that is already part of an active call.
   const size_t mic_bytes = (this->preroll_ms_ + 500) * BYTE_RATE / 1000;
@@ -174,8 +175,8 @@ void VoiceLabs::setup() {
   }
 }
 
-void VoiceLabs::dump_config() {
-  ESP_LOGCONFIG(TAG, "Voice Labs:");
+void VoiceIncubator::dump_config() {
+  ESP_LOGCONFIG(TAG, "Voice Incubator:");
   ESP_LOGCONFIG(TAG, "  Port: %u", this->port_);
   ESP_LOGCONFIG(TAG, "  Pre-roll: %" PRIu32 " ms", this->preroll_ms_);
   ESP_LOGCONFIG(TAG, "  Output buffer: %" PRIu32 " ms", this->output_buffer_ms_);
@@ -184,7 +185,7 @@ void VoiceLabs::dump_config() {
   ESP_LOGCONFIG(TAG, "  Wake word models: %zu (pushed by the app at connect)", this->wake_detector_.model_count());
 }
 
-void VoiceLabs::loop() {
+void VoiceIncubator::loop() {
   if (this->listen_socket_ == nullptr) {
     return;
   }
@@ -237,7 +238,7 @@ void VoiceLabs::loop() {
   this->flush_tx_();
 }
 
-void VoiceLabs::accept_client_() {
+void VoiceIncubator::accept_client_() {
   struct sockaddr_storage source_addr;
   socklen_t addr_len = sizeof(source_addr);
   auto sock = this->listen_socket_->accept_loop_monitored((struct sockaddr *) &source_addr, &addr_len);
@@ -289,10 +290,18 @@ void VoiceLabs::accept_client_() {
   this->rx_payload_filled_ = 0;
   this->rx_in_payload_ = false;
 
+  // PROTOCOL.md: protocol 2 adds model, firmware, aec and wake_format to
+  // protocol 1's, which apps before it read as before.
   const std::string hello = json::build_json([this](JsonObject root) {
-    root["protocol"] = 1;
+    root["protocol"] = 2;
     root["name"] = App.get_name();
     root["mac"] = get_mac_address();
+    if (!this->model_.empty())
+      root["model"] = this->model_;
+#ifdef ESPHOME_PROJECT_VERSION
+    root["firmware"] = ESPHOME_PROJECT_VERSION;
+#endif
+    root["esphome"] = ESPHOME_VERSION;
     root["sample_rate"] = SAMPLE_RATE;
     root["channels"] = 1;
     root["bits_per_sample"] = 16;
@@ -300,6 +309,7 @@ void VoiceLabs::accept_client_() {
     root["output_buffer_bytes"] = this->out_ring_->free() + this->out_ring_->available();
     // No model is compiled in, so the app has to push one before this device
     // can detect anything.
+    root["wake_format"] = "mixednet";
     root["wake_models"] = this->wake_detector_.model_count();
     root["model_slots"] = MAX_MODEL_SLOTS;
     root["feature_size"] = FEATURE_SIZE;
@@ -315,6 +325,9 @@ void VoiceLabs::accept_client_() {
     // It can open the microphone again for an answer, with no wake word
     // (HANGUP "listen": a call whose wake word is "follow_up").
     root["listen"] = true;
+    // A second capture of each call (AUDIO_IN_AEC), and while monitored.
+    if (this->aec_source_ != nullptr)
+      root["aec"] = true;
     if (this->monitor_aec_ring_ != nullptr)
       root["monitor_aec"] = true;
     if (this->aec_lead_samples_ >= 0)
@@ -326,7 +339,7 @@ void VoiceLabs::accept_client_() {
   this->connected_trigger_.trigger();
 }
 
-void VoiceLabs::disconnect_client_(const char *reason) {
+void VoiceIncubator::disconnect_client_(const char *reason) {
   if (this->client_ == nullptr) {
     return;
   }
@@ -352,7 +365,7 @@ void VoiceLabs::disconnect_client_(const char *reason) {
   this->disconnected_trigger_.trigger();
 }
 
-void VoiceLabs::read_socket_() {
+void VoiceIncubator::read_socket_() {
   // Stop pulling frames once the playback buffer is nearly full; the TCP receive
   // window then closes and backpressure propagates all the way to the app.
   while (this->client_ != nullptr && this->out_ring_->free() >= MAX_PAYLOAD_SIZE) {
@@ -413,7 +426,7 @@ void VoiceLabs::read_socket_() {
   }
 }
 
-bool VoiceLabs::handle_frame_(MessageType type, const uint8_t *payload, size_t len) {
+bool VoiceIncubator::handle_frame_(MessageType type, const uint8_t *payload, size_t len) {
   switch (type) {
     case MessageType::AUDIO_OUT: {
       if (this->discard_audio_out_) {
@@ -490,11 +503,13 @@ bool VoiceLabs::handle_frame_(MessageType type, const uint8_t *payload, size_t l
   return true;
 }
 
-void VoiceLabs::handle_model_start_(const uint8_t *payload, size_t len) {
+void VoiceIncubator::handle_model_start_(const uint8_t *payload, size_t len) {
   ModelConfig config;
   size_t size = 0;
 
+  std::string format;
   const bool parsed = json::parse_json(payload, len, [&](JsonObject root) {
+    format = root["format"] | "mixednet";
     config.id = root["id"] | "";
     config.wake_word = root["wake_word"] | "";
     config.is_vad = std::string(root["kind"] | "wake") == "vad";
@@ -513,6 +528,11 @@ void VoiceLabs::handle_model_start_(const uint8_t *payload, size_t len) {
     this->send_model_result_(false, "malformed header");
     return;
   }
+  if (format != "mixednet") {
+    ESP_LOGE(TAG, "Model '%s' is %s, not mixednet", config.id.c_str(), format.c_str());
+    this->send_model_result_(false, "unsupported format");
+    return;
+  }
   if (config.wake_word.empty()) {
     config.wake_word = config.id;
   }
@@ -525,7 +545,7 @@ void VoiceLabs::handle_model_start_(const uint8_t *payload, size_t len) {
   ESP_LOGI(TAG, "Receiving %s model '%s' (%zu bytes)", config.is_vad ? "VAD" : "wake word", config.id.c_str(), size);
 }
 
-void VoiceLabs::handle_model_end_() {
+void VoiceIncubator::handle_model_end_() {
   if (!this->staging_ok_) {
     this->send_model_result_(false, "no model staged");
     return;
@@ -549,7 +569,7 @@ void VoiceLabs::handle_model_end_() {
   this->wake_detector_.start();
 }
 
-void VoiceLabs::send_model_result_(bool ok, const char *error) {
+void VoiceIncubator::send_model_result_(bool ok, const char *error) {
   const std::string json_str = json::build_json([this, ok, error](JsonObject root) {
     root["id"] = this->staging_id_;
     root["ok"] = ok;
@@ -562,7 +582,7 @@ void VoiceLabs::send_model_result_(bool ok, const char *error) {
   this->flush_tx_();
 }
 
-void VoiceLabs::poll_wake_detector_() {
+void VoiceIncubator::poll_wake_detector_() {
   Detection detection;
   while (this->wake_detector_.take_detection(&detection)) {
     if (this->monitoring_) {
@@ -584,7 +604,7 @@ void VoiceLabs::poll_wake_detector_() {
   }
 }
 
-void VoiceLabs::send_wake_report_() {
+void VoiceIncubator::send_wake_report_() {
   std::vector<ModelReport> reports;
   this->wake_detector_.take_report(&reports);
   const std::string json_str = json::build_json([&](JsonObject root) {
@@ -608,7 +628,7 @@ void VoiceLabs::send_wake_report_() {
   this->send_json_frame_(MessageType::WAKE_REPORT, json_str);
 }
 
-void VoiceLabs::handle_event_(const uint8_t *payload, size_t len) {
+void VoiceIncubator::handle_event_(const uint8_t *payload, size_t len) {
   std::string event_type;
   CallEventData event_data;
 
@@ -644,7 +664,7 @@ void VoiceLabs::handle_event_(const uint8_t *payload, size_t len) {
   this->event_trigger_.trigger(event_type, event_data);
 }
 
-size_t VoiceLabs::trim_preroll_(ring_buffer::RingBuffer *ring, size_t target) {
+size_t VoiceIncubator::trim_preroll_(ring_buffer::RingBuffer *ring, size_t target) {
   if (ring == nullptr) {
     return 0;
   }
@@ -660,7 +680,7 @@ size_t VoiceLabs::trim_preroll_(ring_buffer::RingBuffer *ring, size_t target) {
   return buffered;
 }
 
-void VoiceLabs::start_call(const std::string &wake_word, const Detection *detection, int32_t preroll_ms) {
+void VoiceIncubator::start_call(const std::string &wake_word, const Detection *detection, int32_t preroll_ms) {
   if (this->client_ == nullptr) {
     ESP_LOGW(TAG, "Cannot start call: Home Assistant not connected");
     return;
@@ -718,7 +738,7 @@ void VoiceLabs::start_call(const std::string &wake_word, const Detection *detect
   this->call_start_trigger_.trigger(wake_word);
 }
 
-void VoiceLabs::end_call(const std::string &reason) {
+void VoiceIncubator::end_call(const std::string &reason) {
   if (!this->in_call_) {
     return;
   }
@@ -737,7 +757,7 @@ void VoiceLabs::end_call(const std::string &reason) {
   this->call_end_trigger_.trigger(reason);
 }
 
-void VoiceLabs::cancel_call() {
+void VoiceIncubator::cancel_call() {
   if (!this->in_call_) {
     return;
   }
@@ -757,7 +777,7 @@ void VoiceLabs::cancel_call() {
   this->call_end_trigger_.trigger("cancelled");
 }
 
-size_t VoiceLabs::pump_ring_(ring_buffer::RingBuffer *ring, MessageType type, size_t budget) {
+size_t VoiceIncubator::pump_ring_(ring_buffer::RingBuffer *ring, MessageType type, size_t budget) {
   if (ring == nullptr) {
     return 0;
   }
@@ -788,7 +808,7 @@ size_t VoiceLabs::pump_ring_(ring_buffer::RingBuffer *ring, MessageType type, si
   return moved;
 }
 
-void VoiceLabs::pump_microphone_() {
+void VoiceIncubator::pump_microphone_() {
   // One chunk from each capture per round, swapping which goes first. Whichever
   // runs first can fill the outgoing buffer and leave the other with no room,
   // so a fixed order would let the pre-roll of one stream run ahead of the
@@ -814,7 +834,7 @@ void VoiceLabs::pump_microphone_() {
   }
 }
 
-void VoiceLabs::pump_speaker_() {
+void VoiceIncubator::pump_speaker_() {
   // Finish the chunk the speaker only partially accepted last time.
   if (this->play_sent_ < this->play_pending_.size()) {
     this->play_sent_ += this->speaker_->play(this->play_pending_.data() + this->play_sent_,
@@ -842,7 +862,7 @@ void VoiceLabs::pump_speaker_() {
   }
 }
 
-void VoiceLabs::check_playback_drained_() {
+void VoiceIncubator::check_playback_drained_() {
   if (!this->audio_out_done_ || this->playback_drained_sent_) {
     return;
   }
@@ -858,7 +878,7 @@ void VoiceLabs::check_playback_drained_() {
   ESP_LOGD(TAG, "Playback drained");
 }
 
-void VoiceLabs::set_monitoring_(bool active, bool intercom) {
+void VoiceIncubator::set_monitoring_(bool active, bool intercom) {
   intercom = active && intercom;
   if (this->monitoring_ == active && this->intercom_ == intercom) {
     return;
@@ -888,7 +908,7 @@ void VoiceLabs::set_monitoring_(bool active, bool intercom) {
   this->event_trigger_.trigger("monitoring", data);
 }
 
-void VoiceLabs::end_intercom() {
+void VoiceIncubator::end_intercom() {
   if (!this->intercom_) {
     return;
   }
@@ -903,14 +923,14 @@ void VoiceLabs::end_intercom() {
   ESP_LOGI(TAG, "Intercom ended here");
 }
 
-void VoiceLabs::send_event(const std::string &type) {
+void VoiceIncubator::send_event(const std::string &type) {
   const std::string json_str = json::build_json([&](JsonObject root) { root["type"] = type; });
   if (!this->send_json_frame_(MessageType::DEVICE_EVENT, json_str)) {
     ESP_LOGD(TAG, "Event %s not sent (no app connected)", type.c_str());
   }
 }
 
-void VoiceLabs::send_status_() {
+void VoiceIncubator::send_status_() {
   const size_t free_bytes = this->out_ring_->free();
   const size_t queued_bytes = this->out_ring_->available();
   const std::string json_str = json::build_json([&](JsonObject root) {
@@ -924,7 +944,7 @@ void VoiceLabs::send_status_() {
   this->send_json_frame_(MessageType::STATUS, json_str);
 }
 
-bool VoiceLabs::send_frame_(MessageType type, const uint8_t *payload, size_t len) {
+bool VoiceIncubator::send_frame_(MessageType type, const uint8_t *payload, size_t len) {
   if (this->client_ == nullptr || len > MAX_PAYLOAD_SIZE) {
     return false;
   }
@@ -946,11 +966,11 @@ bool VoiceLabs::send_frame_(MessageType type, const uint8_t *payload, size_t len
   return true;
 }
 
-bool VoiceLabs::send_json_frame_(MessageType type, const std::string &json_str) {
+bool VoiceIncubator::send_json_frame_(MessageType type, const std::string &json_str) {
   return this->send_frame_(type, reinterpret_cast<const uint8_t *>(json_str.data()), json_str.size());
 }
 
-void VoiceLabs::flush_tx_() {
+void VoiceIncubator::flush_tx_() {
   while (this->client_ != nullptr && this->tx_sent_ < this->tx_buffer_.size()) {
     ssize_t ret = this->client_->write(this->tx_buffer_.data() + this->tx_sent_,
                                        this->tx_buffer_.size() - this->tx_sent_);
@@ -969,4 +989,4 @@ void VoiceLabs::flush_tx_() {
   }
 }
 
-}  // namespace esphome::voice_labs
+}  // namespace esphome::voice_incubator

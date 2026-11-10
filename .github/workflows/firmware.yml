@@ -1,0 +1,116 @@
+name: Firmware
+
+# Every device's firmware is built on each push and pull request; run by hand
+# (workflow_dispatch), the builds are published as the install page on GitHub
+# Pages, a page per device at <pages>/<device>/.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: firmware-${{ github.event_name == 'workflow_dispatch' && 'pages' || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        # A device is <device>.yaml here: the install page's wrapper of
+        # devices/<device>.yaml.
+        device: [voice-pe]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Pages
+        id: pages
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/configure-pages@v5
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: false
+
+      - name: Compute firmware version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          commit_date="$(git show -s --format=%cs HEAD)"
+          echo "version=${commit_date//-/.}.${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
+
+      - name: Build ${{ matrix.device }}
+        shell: bash
+        env:
+          DEVICE: ${{ matrix.device }}
+          # Only a published build is told where it is published (its update
+          # entity checks there).
+          PAGES_BASE_URL: ${{ steps.pages.outputs.base_url || 'https://example.invalid' }}
+          FW_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          uvx ewt-gen==1.6.1 "$DEVICE.yaml" \
+            -t "$DEVICE" \
+            -o "site/$DEVICE" \
+            --publish-url "${PAGES_BASE_URL%/}/$DEVICE" \
+            --fw-version "$FW_VERSION"
+
+      - name: Upload ${{ matrix.device }}
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: site-${{ matrix.device }}
+          path: site/${{ matrix.device }}
+
+  publish:
+    if: github.event_name == 'workflow_dispatch'
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download the builds
+        uses: actions/download-artifact@v4
+        with:
+          pattern: site-*
+          path: site
+
+      - name: Assemble the install page
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd site
+          for dir in site-*; do mv "$dir" "${dir#site-}"; done
+          {
+            echo '<!doctype html>'
+            echo '<html><head><meta charset="utf-8"><title>Voice Incubator firmware</title><meta name="viewport" content="width=device-width"><style>body { font-family: sans-serif; margin: 2em } li { margin: 4px 0 }</style></head><body>'
+            echo '<h1>Voice Incubator firmware</h1><ul>'
+            for dir in */; do
+              echo "<li><a href=\"./${dir%/}/\">${dir%/}</a></li>"
+            done
+            echo '</ul></body></html>'
+          } > index.html
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    needs: publish
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

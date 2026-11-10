@@ -6,7 +6,7 @@
 #include <cstring>
 #include <climits>
 
-namespace esphome::voice_labs {
+namespace esphome::voice_incubator {
 
 namespace {
 
@@ -179,4 +179,4 @@ uint8_t MixedNetExecutor::invoke(const int8_t *features) {
   return probability;
 }
 
-}  // namespace esphome::voice_labs
+}  // namespace esphome::voice_incubator

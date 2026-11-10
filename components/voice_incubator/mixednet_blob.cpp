@@ -2,11 +2,11 @@
 
 #include <cstring>
 
-namespace esphome::voice_labs {
+namespace esphome::voice_incubator {
 
 namespace {
 
-// Must match voice_labs/mixednet.py in the app.
+// Must match voice_incubator/mixednet.py in the app.
 constexpr size_t HEADER_SIZE = 32;
 constexpr size_t BUFFER_SIZE = 10;
 constexpr size_t OP_SIZE = 52;
@@ -170,4 +170,4 @@ bool MixedNetBlob::parse(const uint8_t *data, size_t len) {
   return true;
 }
 
-}  // namespace esphome::voice_labs
+}  // namespace esphome::voice_incubator

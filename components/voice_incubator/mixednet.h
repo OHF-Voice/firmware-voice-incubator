@@ -6,7 +6,7 @@
 #include <cstdint>
 #include <memory>
 
-namespace esphome::voice_labs {
+namespace esphome::voice_incubator {
 
 enum MixedNetOpType : uint8_t {
   MIXEDNET_OP_RING_PUSH = 0,  // append frames to a ring window
@@ -107,4 +107,4 @@ class MixedNetExecutor {
   int8_t last_logit_{0};
 };
 
-}  // namespace esphome::voice_labs
+}  // namespace esphome::voice_incubator

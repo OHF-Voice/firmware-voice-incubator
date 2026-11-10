@@ -21,7 +21,7 @@
 #include <string>
 #include <vector>
 
-namespace esphome::voice_labs {
+namespace esphome::voice_incubator {
 
 /// Feature frames per spectrogram slice. Every microWakeWord model is trained
 /// on this width, so a model that disagrees is rejected rather than run.
@@ -121,7 +121,7 @@ struct WakeModel {
 
 /// Runs streaming wake word models over the microphone without TFLite.
 ///
-/// Models are not compiled in: the app pushes them over the voice_labs socket,
+/// Models are not compiled in: the app pushes them over the voice_incubator socket,
 /// so the wake word can change without reflashing. Inference runs on its own
 /// task, since doing it on the microphone's task would stall the capture that
 /// also feeds the call's pre-roll buffer.
@@ -214,6 +214,6 @@ class WakeDetector {
   volatile bool stop_requested_{false};
 };
 
-}  // namespace esphome::voice_labs
+}  // namespace esphome::voice_incubator
 
 #endif  // USE_ESP32

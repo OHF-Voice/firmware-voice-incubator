@@ -1,16 +1,17 @@
-# The Voice Labs firmware (voice-labs.yaml) as the install page builds it: Wi-Fi
-# given over improv -- Bluetooth, with the center button to authorize, or USB --
-# and a name of its own from its MAC. The Voice Labs app finds it on the network.
+# Voice Incubator firmware for the Home Assistant Voice PE (devices/voice-pe.yaml)
+# as the install page builds it: Wi-Fi given over improv -- Bluetooth, with the
+# center button to authorize, or USB -- and a name of its own from its MAC. The
+# Voice Incubator app finds it on the network.
 packages:
-  voice-labs: !include voice-labs.yaml
+  device: !include devices/voice-pe.yaml
 
 esphome:
   # Must match the base config's name: ESPHome builds into .esphome/build/<name>/,
   # and ewt-gen reads `name` from THIS file to find firmware.factory.bin.
-  name: voice-labs-vpe
+  name: voice-incubator-vpe
   name_add_mac_suffix: true
   project:
-    name: OHF-Voice.Voice Labs VPE
+    name: OHF-Voice.Voice Incubator VPE
     version: dev
 
 wifi:
@@ -23,7 +24,7 @@ wifi:
 improv_serial:
 
 esp32_ble:
-  name: voice-labs  # at most 13 characters
+  name: incubator  # at most 13 characters
 
 improv_ble:
   authorizer: center_button

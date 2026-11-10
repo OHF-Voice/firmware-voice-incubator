@@ -6,7 +6,7 @@
 #include <cstdint>
 #include <vector>
 
-namespace esphome::voice_labs {
+namespace esphome::voice_incubator {
 
 /// Binds a MixedNetModel to a model blob received over the wire.
 ///
@@ -40,4 +40,4 @@ class MixedNetBlob {
   uint8_t feature_size_{0};
 };
 
-}  // namespace esphome::voice_labs
+}  // namespace esphome::voice_incubator

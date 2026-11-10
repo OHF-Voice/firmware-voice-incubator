@@ -18,7 +18,7 @@
 #include <string>
 #include <vector>
 
-namespace esphome::voice_labs {
+namespace esphome::voice_incubator {
 
 static constexpr uint32_t SAMPLE_RATE = 16000;
 static constexpr uint8_t BYTES_PER_SAMPLE = 2;
@@ -78,7 +78,7 @@ struct CallEventData {
   bool get_bool(const std::string &key, bool default_value = false) const;
 };
 
-class VoiceLabs : public Component {
+class VoiceIncubator : public Component {
  public:
   void setup() override;
   void loop() override;
@@ -105,6 +105,8 @@ class VoiceLabs : public Component {
   void set_call_timeout_ms(uint32_t ms) { this->call_timeout_ms_ = ms; }
   void set_status_interval_ms(uint32_t ms) { this->status_interval_ms_ = ms; }
   void set_volume(float volume) { this->volume_ = volume; }
+  /// What the device is, told to the app (HELLO ``model``): voice-pe, box-3, ...
+  void set_model(const std::string &model) { this->model_ = model; }
 
   /// Begin a call. No-op unless Home Assistant is connected and no call is active.
   /// ``detection``: what the wake word came in with, told to the app.
@@ -240,6 +242,7 @@ class VoiceLabs : public Component {
   size_t out_dropped_bytes_{0};
 
   float volume_{0.7f};
+  std::string model_;
   uint16_t port_{6055};
   bool in_call_{false};
   std::atomic<bool> monitoring_{false};
@@ -264,7 +267,7 @@ class VoiceLabs : public Component {
   Trigger<> listen_trigger_;
 };
 
-template<typename... Ts> class StartCallAction : public Action<Ts...>, public Parented<VoiceLabs> {
+template<typename... Ts> class StartCallAction : public Action<Ts...>, public Parented<VoiceIncubator> {
  public:
   TEMPLATABLE_VALUE(std::string, wake_word)
   TEMPLATABLE_VALUE(uint32_t, preroll)
@@ -274,23 +277,23 @@ template<typename... Ts> class StartCallAction : public Action<Ts...>, public Pa
   }
 };
 
-template<typename... Ts> class EndCallAction : public Action<Ts...>, public Parented<VoiceLabs> {
+template<typename... Ts> class EndCallAction : public Action<Ts...>, public Parented<VoiceIncubator> {
  public:
   TEMPLATABLE_VALUE(std::string, reason)
   void play(const Ts &...x) override { this->parent_->end_call(this->reason_.value(x...)); }
 };
 
-template<typename... Ts> class CancelCallAction : public Action<Ts...>, public Parented<VoiceLabs> {
+template<typename... Ts> class CancelCallAction : public Action<Ts...>, public Parented<VoiceIncubator> {
  public:
   void play(const Ts &...x) override { this->parent_->cancel_call(); }
 };
 
-template<typename... Ts> class EndIntercomAction : public Action<Ts...>, public Parented<VoiceLabs> {
+template<typename... Ts> class EndIntercomAction : public Action<Ts...>, public Parented<VoiceIncubator> {
  public:
   void play(const Ts &...x) override { this->parent_->end_intercom(); }
 };
 
-template<typename... Ts> class StopWordAction : public Action<Ts...>, public Parented<VoiceLabs> {
+template<typename... Ts> class StopWordAction : public Action<Ts...>, public Parented<VoiceIncubator> {
  public:
   explicit StopWordAction(bool armed) : armed_(armed) {}
   void play(const Ts &...x) override { this->parent_->set_stop_word_armed(this->armed_); }
@@ -299,25 +302,25 @@ template<typename... Ts> class StopWordAction : public Action<Ts...>, public Par
   bool armed_;
 };
 
-template<typename... Ts> class SendEventAction : public Action<Ts...>, public Parented<VoiceLabs> {
+template<typename... Ts> class SendEventAction : public Action<Ts...>, public Parented<VoiceIncubator> {
  public:
   TEMPLATABLE_VALUE(std::string, type)
   void play(const Ts &...x) override { this->parent_->send_event(this->type_.value(x...)); }
 };
 
-template<typename... Ts> class IsInCallCondition : public Condition<Ts...>, public Parented<VoiceLabs> {
+template<typename... Ts> class IsInCallCondition : public Condition<Ts...>, public Parented<VoiceIncubator> {
  public:
   bool check(const Ts &...x) override { return this->parent_->is_in_call(); }
 };
 
-template<typename... Ts> class IsIntercomCondition : public Condition<Ts...>, public Parented<VoiceLabs> {
+template<typename... Ts> class IsIntercomCondition : public Condition<Ts...>, public Parented<VoiceIncubator> {
  public:
   bool check(const Ts &...x) override { return this->parent_->is_intercom(); }
 };
 
-template<typename... Ts> class IsConnectedCondition : public Condition<Ts...>, public Parented<VoiceLabs> {
+template<typename... Ts> class IsConnectedCondition : public Condition<Ts...>, public Parented<VoiceIncubator> {
  public:
   bool check(const Ts &...x) override { return this->parent_->is_connected(); }
 };
 
-}  // namespace esphome::voice_labs
+}  // namespace esphome::voice_incubator

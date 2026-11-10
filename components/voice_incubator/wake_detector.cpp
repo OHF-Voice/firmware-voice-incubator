@@ -10,9 +10,9 @@
 #include <cstdlib>
 #include <cstring>
 
-namespace esphome::voice_labs {
+namespace esphome::voice_incubator {
 
-static const char *const TAG = "voice_labs.wake";
+static const char *const TAG = "voice_incubator.wake";
 
 static constexpr uint32_t TASK_STACK_SIZE = 4096;
 static constexpr UBaseType_t TASK_PRIORITY = 3;
@@ -445,6 +445,6 @@ void WakeDetector::process_features_(const int8_t *features) {
   }
 }
 
-}  // namespace esphome::voice_labs
+}  // namespace esphome::voice_incubator
 
 #endif  // USE_ESP32
