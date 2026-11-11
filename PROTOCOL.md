@@ -154,7 +154,7 @@ it can and ignores the rest.
 
 | `type` | When | `data` |
 |---|---|---|
-| `listening` | the command is being heard | `stage` |
+| `listening` | the command is being heard: after a wake word, once the app has verified it (the VPE's ring stands still until then); after `follow_up`, at once | `stage` |
 | `processing` | the command ended; recognizing it | `speaker` (a name, or `unknown`), `score`, and their color `r`, `g`, `b` |
 | `recognized` | it was understood | `text`, `command` (its id; `answer`, `question`) |
 | `not_recognized` | it wasn't | `heard` |

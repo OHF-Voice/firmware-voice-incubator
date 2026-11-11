@@ -1068,11 +1068,13 @@ voice_incubator:
         format: "Call started: %s"
         args: [wake_word.c_str()]
     # An answer the app asked for (follow_up) spins slowly, as the stock
-    # firmware waits for a command; a wake word, fast.
+    # firmware waits for a command. A wake word stands still, fading in, until
+    # the app has verified it (listening), and then spins fast: a refused one
+    # never moves.
     - lambda: |-
         id(speaker_rgb) = -1;
         id(showing_result) = false;
-        id(call_effect) = wake_word == "follow_up" ? "Waiting for Command" : "Listening For Command";
+        id(call_effect) = wake_word == "follow_up" ? "Waiting for Command" : "Heard";
     - light.turn_on:
         id: voice_assistant_leds
         brightness: !lambda ${ring_brightness}
@@ -1181,6 +1183,17 @@ voice_incubator:
                 id(timer_colors)[k] = event_data.get_int("color" + std::to_string(k), -1);
               }
           - script.execute: control_leds
+    # The app verified the wake word: the ring starts spinning where it stood.
+    # (An answer's listening changes nothing: it spins slowly from the start.)
+    - if:
+        condition:
+          lambda: 'return event_type == "listening" && id(call_effect) == "Heard";'
+        then:
+          - lambda: id(call_effect) = "Listening For Command";
+          - light.turn_on:
+              id: voice_assistant_leds
+              brightness: !lambda ${ring_brightness}
+              effect: "Listening For Command"
     - if:
         condition:
           lambda: 'return event_type == "processing";'
@@ -1312,6 +1325,34 @@ light:
               }
             }
             id(global_led_animation_index) = (id(global_led_animation_index) + 1) % 12;
+      # Standing still: a wake word heard and not yet verified by the app. The
+      # fast spin's own frame, fading in slowly at first (the square of the
+      # time, full at 400 ms): one the app refuses, most of them within 0.2 s,
+      # is a faint glow that never moves; one it verifies starts spinning
+      # from here (the listening event).
+      - addressable_lambda:
+          name: "Heard"
+          update_interval: 20ms
+          lambda: |-
+            static uint32_t started = 0;
+            if (initial_run) {
+              started = millis();
+            }
+            const float t = std::min(1.0f, (millis() - started) / 400.0f);
+            const int rgb = id(speaker_rgb) >= 0 && !id(night) ? id(speaker_rgb) : ${ring_rgb};
+            const Color color = Color((rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF) * uint8_t(255.0f * t * t);
+            const uint8_t head = id(global_led_animation_index) % 12;
+            for (uint8_t i = 0; i < 12; i++) {
+              if (i == head || i == (head + 6) % 12) {
+                it[i] = color;
+              } else if (i == (head + 11) % 12 || i == (head + 5) % 12) {
+                it[i] = color * 192;
+              } else if (i == (head + 10) % 12 || i == (head + 4) % 12) {
+                it[i] = color * 128;
+              } else {
+                it[i] = Color::BLACK;
+              }
+            }
       # Fast clockwise spin: wake word heard, command being spoken.
       - addressable_lambda:
           name: "Listening For Command"
