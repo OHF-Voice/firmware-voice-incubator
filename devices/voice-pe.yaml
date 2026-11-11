@@ -1330,25 +1330,50 @@ light:
       # time, full at 400 ms): one the app refuses, most of them within 0.2 s,
       # is a faint glow that never moves; one it verifies starts spinning
       # from here (the listening event).
+      #
+      # The glow is the ring's color from its first frame. The gamma
+      # correction keeps any channel with a value at 1 at least, so a dim
+      # blue would come out white or teal (every channel at 1). While it
+      # fades, each LED is lit at the level its strongest channel would get,
+      # in the proportions of the ring's color at full.
       - addressable_lambda:
           name: "Heard"
           update_interval: 20ms
           lambda: |-
             static uint32_t started = 0;
+            static esphome::light::ESPColorCorrection lit, raw;
             if (initial_run) {
               started = millis();
             }
             const float t = std::min(1.0f, (millis() - started) / 400.0f);
             const int rgb = id(speaker_rgb) >= 0 && !id(night) ? id(speaker_rgb) : ${ring_rgb};
-            const Color color = Color((rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF) * uint8_t(255.0f * t * t);
+            const Color full((rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF);
+            const Color color = full * uint8_t(255.0f * t * t);
+            // The ring's own correction: the levels the LEDs would get.
+            lit.set_gamma_table(id(voice_assistant_leds).get_gamma_table());
+            lit.set_local_brightness(uint8_t(roundf(id(voice_assistant_leds).current_values.get_brightness() * 255.0f)));
+            const Color target = lit.color_correct(full);
+            const uint16_t top = std::max({target.r, target.g, target.b});
+            auto show = [&](uint8_t i, const Color &c) {
+              if (t >= 1.0f || top == 0) {
+                it[i] = c;
+                return;
+              }
+              const Color now = lit.color_correct(c);
+              const uint16_t level = std::max({now.r, now.g, now.b});
+              auto part = [&](uint8_t v) { return uint8_t((v * level * 2 + top) / (2 * top)); };
+              auto led = it[i];
+              led.raw_set_color_correction(&raw);
+              led = Color(part(target.r), part(target.g), part(target.b));
+            };
             const uint8_t head = id(global_led_animation_index) % 12;
             for (uint8_t i = 0; i < 12; i++) {
               if (i == head || i == (head + 6) % 12) {
-                it[i] = color;
+                show(i, color);
               } else if (i == (head + 11) % 12 || i == (head + 5) % 12) {
-                it[i] = color * 192;
+                show(i, color * 192);
               } else if (i == (head + 10) % 12 || i == (head + 4) % 12) {
-                it[i] = color * 128;
+                show(i, color * 128);
               } else {
                 it[i] = Color::BLACK;
               }
