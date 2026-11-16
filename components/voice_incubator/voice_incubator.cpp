@@ -791,8 +791,11 @@ size_t VoiceIncubator::pump_ring_(ring_buffer::RingBuffer *ring, MessageType typ
     if (available == 0) {
       break;
     }
-    const size_t chunk =
-        std::min({available, MAX_PAYLOAD_SIZE, TX_BUFFER_LIMIT - queued - HEADER_SIZE, budget - moved});
+    size_t chunk = std::min({available, MAX_PAYLOAD_SIZE, TX_BUFFER_LIMIT - queued - HEADER_SIZE, budget - moved});
+    // Whole samples only: the 3-byte header can leave an odd amount of room,
+    // and a frame cut mid-sample misaligns the app's audio (an odd read also
+    // leaves the ring itself off by a byte for every read after it).
+    chunk -= chunk % BYTES_PER_SAMPLE;
     if (chunk == 0) {
       break;
     }
