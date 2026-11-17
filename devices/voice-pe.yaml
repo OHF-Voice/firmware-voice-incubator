@@ -1342,10 +1342,6 @@ light:
           lambda: |-
             static uint32_t started = 0;
             static esphome::light::ESPColorCorrection lit;
-            // ESPHome 2026.11 replaces the correction override with set_raw().
-            #if ESPHOME_VERSION_CODE < VERSION_CODE(2026, 11, 0)
-            static esphome::light::ESPColorCorrection raw;
-            #endif
             if (initial_run) {
               started = millis();
             }
@@ -1368,6 +1364,7 @@ light:
               auto part = [&](uint8_t v) { return uint8_t((v * level * 2 + top) / (2 * top)); };
               auto led = it[i];
               #if ESPHOME_VERSION_CODE < VERSION_CODE(2026, 11, 0)
+              static esphome::light::ESPColorCorrection raw;
               led.raw_set_color_correction(&raw);
               led = Color(part(target.r), part(target.g), part(target.b));
               #else
