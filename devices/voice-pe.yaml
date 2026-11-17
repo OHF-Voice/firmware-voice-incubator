@@ -1341,7 +1341,11 @@ light:
           update_interval: 20ms
           lambda: |-
             static uint32_t started = 0;
-            static esphome::light::ESPColorCorrection lit, raw;
+            static esphome::light::ESPColorCorrection lit;
+            // ESPHome 2026.11 replaces the correction override with set_raw().
+            #if ESPHOME_VERSION_CODE < VERSION_CODE(2026, 11, 0)
+            static esphome::light::ESPColorCorrection raw;
+            #endif
             if (initial_run) {
               started = millis();
             }
@@ -1363,8 +1367,12 @@ light:
               const uint16_t level = std::max({now.r, now.g, now.b});
               auto part = [&](uint8_t v) { return uint8_t((v * level * 2 + top) / (2 * top)); };
               auto led = it[i];
+              #if ESPHOME_VERSION_CODE < VERSION_CODE(2026, 11, 0)
               led.raw_set_color_correction(&raw);
               led = Color(part(target.r), part(target.g), part(target.b));
+              #else
+              led.set_raw(Color(part(target.r), part(target.g), part(target.b)));
+              #endif
             };
             const uint8_t head = id(global_led_animation_index) % 12;
             for (uint8_t i = 0; i < 12; i++) {
