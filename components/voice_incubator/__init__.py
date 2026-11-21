@@ -35,6 +35,7 @@ CONF_ON_LISTEN = "on_listen"
 CONF_ON_MODEL_LOADED = "on_model_loaded"
 CONF_ON_STOP_WORD = "on_stop_word"
 CONF_OUTPUT_BUFFER = "output_buffer"
+CONF_OUTPUT_SAMPLE_RATE = "output_sample_rate"
 CONF_PREROLL = "preroll"
 CONF_STATUS_INTERVAL = "status_interval"
 CONF_TASK_STACK_IN_PSRAM = "task_stack_in_psram"
@@ -111,6 +112,9 @@ CONFIG_SCHEMA = cv.Schema(
         cv.Optional(
             CONF_OUTPUT_BUFFER, default="1s"
         ): cv.positive_time_period_milliseconds,
+        # The highest rate the app may send playback in: the speaker's, so it
+        # plays unresampled. 16000 (the microphone's) is always accepted.
+        cv.Optional(CONF_OUTPUT_SAMPLE_RATE, default=16000): cv.one_of(16000, 48000, int=True),
         cv.Optional(
             CONF_CALL_TIMEOUT, default="30s"
         ): cv.positive_time_period_milliseconds,
@@ -198,6 +202,7 @@ async def to_code(config):
     cg.add(var.set_port(config[CONF_PORT]))
     cg.add(var.set_preroll_ms(config[CONF_PREROLL].total_milliseconds))
     cg.add(var.set_output_buffer_ms(config[CONF_OUTPUT_BUFFER].total_milliseconds))
+    cg.add(var.set_max_output_rate(config[CONF_OUTPUT_SAMPLE_RATE]))
     cg.add(var.set_call_timeout_ms(config[CONF_CALL_TIMEOUT].total_milliseconds))
     cg.add(var.set_status_interval_ms(config[CONF_STATUS_INTERVAL].total_milliseconds))
     cg.add(var.set_volume(config[CONF_VOLUME]))

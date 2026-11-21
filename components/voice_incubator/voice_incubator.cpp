@@ -87,7 +87,8 @@ void VoiceIncubator::setup() {
     return;
   }
 
-  const size_t out_bytes = this->output_buffer_ms_ * BYTE_RATE / 1000;
+  // output_buffer at the highest rate the app may choose (CONFIG).
+  const size_t out_bytes = this->output_buffer_ms_ * this->max_output_rate_ * BYTES_PER_SAMPLE / 1000;
   this->out_ring_ = ring_buffer::RingBuffer::create(out_bytes);
   if (this->out_ring_ == nullptr) {
     ESP_LOGE(TAG, "Failed to allocate %zu byte output buffer", out_bytes);
@@ -180,6 +181,7 @@ void VoiceIncubator::dump_config() {
   ESP_LOGCONFIG(TAG, "  Port: %u", this->port_);
   ESP_LOGCONFIG(TAG, "  Pre-roll: %" PRIu32 " ms", this->preroll_ms_);
   ESP_LOGCONFIG(TAG, "  Output buffer: %" PRIu32 " ms", this->output_buffer_ms_);
+  ESP_LOGCONFIG(TAG, "  Output sample rates: %" PRIu32 " Hz, up to %" PRIu32 " Hz", SAMPLE_RATE, this->max_output_rate_);
   ESP_LOGCONFIG(TAG, "  Call timeout: %" PRIu32 " ms", this->call_timeout_ms_);
   ESP_LOGCONFIG(TAG, "  Volume: %.2f", this->volume_);
   ESP_LOGCONFIG(TAG, "  Wake word models: %zu (pushed by the app at connect)", this->wake_detector_.model_count());
@@ -291,9 +293,10 @@ void VoiceIncubator::accept_client_() {
   this->rx_in_payload_ = false;
 
   // PROTOCOL.md: protocol 2 adds model, firmware, aec and wake_format to
-  // protocol 1's, which apps before it read as before.
+  // protocol 1's, and protocol 3 output_sample_rates (and CONFIG), which
+  // apps before them read as before: they send SAMPLE_RATE.
   const std::string hello = json::build_json([this](JsonObject root) {
-    root["protocol"] = 2;
+    root["protocol"] = 3;
     root["name"] = App.get_name();
     root["mac"] = get_mac_address();
     if (!this->model_.empty())
@@ -306,7 +309,13 @@ void VoiceIncubator::accept_client_() {
     root["channels"] = 1;
     root["bits_per_sample"] = 16;
     root["preroll_ms"] = this->preroll_ms_;
-    root["output_buffer_bytes"] = this->out_ring_->free() + this->out_ring_->available();
+    root["output_buffer_bytes"] = this->output_limit_bytes_();
+    // What AUDIO_OUT may come in: the microphone's rate (the default), and the
+    // speaker's, which plays without being resampled here.
+    JsonArray output_rates = root["output_sample_rates"].to<JsonArray>();
+    output_rates.add(SAMPLE_RATE);
+    if (this->max_output_rate_ != SAMPLE_RATE)
+      output_rates.add(this->max_output_rate_);
     // No model is compiled in, so the app has to push one before this device
     // can detect anything.
     root["wake_format"] = "mixednet";
@@ -362,13 +371,16 @@ void VoiceIncubator::disconnect_client_(const char *reason) {
   this->wake_detector_.abort_model();
   this->tx_buffer_.clear();
   this->tx_sent_ = 0;
+  // The next app may not say (CONFIG): it sends SAMPLE_RATE.
+  this->set_output_rate_(SAMPLE_RATE);
   this->disconnected_trigger_.trigger();
 }
 
 void VoiceIncubator::read_socket_() {
-  // Stop pulling frames once the playback buffer is nearly full; the TCP receive
-  // window then closes and backpressure propagates all the way to the app.
-  while (this->client_ != nullptr && this->out_ring_->free() >= MAX_PAYLOAD_SIZE) {
+  // Stop pulling frames once output_buffer's worth is queued (at the rate the
+  // app plays at: the ring is sized for the highest); the TCP receive window
+  // then closes and backpressure propagates all the way to the app.
+  while (this->client_ != nullptr && this->out_ring_->available() + MAX_PAYLOAD_SIZE <= this->output_limit_bytes_()) {
     if (!this->rx_in_payload_) {
       ssize_t ret = this->client_->read(this->rx_header_ + this->rx_header_filled_,
                                         HEADER_SIZE - this->rx_header_filled_);
@@ -464,6 +476,9 @@ bool VoiceIncubator::handle_frame_(MessageType type, const uint8_t *payload, siz
       this->wake_detector_.stop();
       this->wake_detector_.clear_models();
       ESP_LOGI(TAG, "Wake word models cleared");
+      break;
+    case MessageType::CONFIG:
+      this->handle_config_(payload, len);
       break;
     case MessageType::MONITOR: {
       bool active = false;
@@ -865,6 +880,34 @@ void VoiceIncubator::pump_speaker_() {
   }
 }
 
+void VoiceIncubator::handle_config_(const uint8_t *payload, size_t len) {
+  uint32_t rate = this->output_rate_;
+  json::parse_json(payload, len, [&rate](JsonObject root) {
+    rate = root["output_sample_rate"] | rate;
+    return true;
+  });
+  if (rate != SAMPLE_RATE && rate != this->max_output_rate_) {
+    ESP_LOGW(TAG, "Output sample rate %" PRIu32 " Hz refused; staying at %" PRIu32 " Hz", rate, this->output_rate_);
+    return;
+  }
+  this->set_output_rate_(rate);
+}
+
+void VoiceIncubator::set_output_rate_(uint32_t rate) {
+  if (rate == this->output_rate_) {
+    return;
+  }
+  // The speaker takes a new format only from a stop; audio queued at the old
+  // rate would play at the wrong speed.
+  this->speaker_->stop();
+  this->out_ring_->reset();
+  this->play_pending_.clear();
+  this->play_sent_ = 0;
+  this->output_rate_ = rate;
+  this->speaker_->set_audio_stream_info(audio::AudioStreamInfo(16, 1, rate));
+  ESP_LOGI(TAG, "Playing the app's audio at %" PRIu32 " Hz", rate);
+}
+
 void VoiceIncubator::check_playback_drained_() {
   if (!this->audio_out_done_ || this->playback_drained_sent_) {
     return;
@@ -934,12 +977,14 @@ void VoiceIncubator::send_event(const std::string &type) {
 }
 
 void VoiceIncubator::send_status_() {
-  const size_t free_bytes = this->out_ring_->free();
-  const size_t queued_bytes = this->out_ring_->available();
+  const size_t queued = this->out_ring_->available();
+  const size_t limit = this->output_limit_bytes_();
+  const size_t free_bytes = limit > queued ? limit - queued : 0;
+  const size_t queued_bytes = queued;
   const std::string json_str = json::build_json([&](JsonObject root) {
     root["free_bytes"] = free_bytes;
     root["queued_bytes"] = queued_bytes;
-    root["queued_ms"] = queued_bytes * 1000 / BYTE_RATE;
+    root["queued_ms"] = queued_bytes * 1000 / this->output_byte_rate_();
     root["speaker_busy"] = this->speaker_->has_buffered_data();
     root["mic_dropped_bytes"] = this->mic_dropped_bytes_;
     root["aec_dropped_bytes"] = this->aec_dropped_bytes_;

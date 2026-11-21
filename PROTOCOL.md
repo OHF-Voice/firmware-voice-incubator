@@ -35,8 +35,9 @@ Every message is one frame:
 | 2 | payload length, big-endian, at most 4096 |
 | n | payload |
 
-Audio payloads are raw PCM: **16 kHz, 16-bit signed little-endian, mono**, in
-both directions. Every other payload is a JSON object (UTF-8). An unknown
+Audio payloads are raw PCM: **16-bit signed little-endian, mono**, at
+**16 kHz** -- except `AUDIO_OUT` after the app chose another of the
+satellite's `output_sample_rates` (`CONFIG`, protocol 3). Every other payload is a JSON object (UTF-8). An unknown
 message type is logged and ignored; unknown JSON fields are ignored.
 
 | Type | Name | From | Payload |
@@ -58,6 +59,7 @@ message type is logged and ignored; unknown JSON fields are ignored.
 | `0x12` | `EVENT` | app | what is happening, to show |
 | `0x13` | `HANGUP` | app | end the call |
 | `0x14` | `MONITOR` | app | stream outside calls, or stop |
+| `0x15` | `CONFIG` | app | how the app's audio is sampled |
 | `0x20` | `MODEL_START` | app | a wake word model's header |
 | `0x21` | `MODEL_DATA` | app | part of its blob |
 | `0x22` | `MODEL_END` | app | the end of its blob |
@@ -69,15 +71,16 @@ What the satellite is and can do. Absent fields are false or unknown.
 
 | Field | |
 |---|---|
-| `protocol` | `2` |
+| `protocol` | `3` |
 | `name` | its node name: unique on the network, and how Home Assistant knows it (an ESPHome device's name) |
 | `mac` | its MAC address: what the app keys the satellite on, so it survives renaming and reflashing |
 | `model` | what it is: `voice-pe`, `box-3`, `linux`, ... |
 | `firmware` | its firmware's version, shown in the app |
 | `esphome` | the ESPHome version it was built with, if any |
-| `sample_rate`, `channels`, `bits_per_sample` | `16000`, `1`, `16`: the only format |
+| `sample_rate`, `channels`, `bits_per_sample` | `16000`, `1`, `16`: the microphone's format |
+| `output_sample_rates` | the rates `AUDIO_OUT` may come in: `[16000]`, or `[16000, 48000]` when the speaker's own rate is higher (absent: `[16000]`) |
 | `preroll_ms` | how much audio from before the wake word a call starts with |
-| `output_buffer_bytes` | its playback buffer |
+| `output_buffer_bytes` | its playback buffer, at 16 kHz (at a higher output rate it holds the same time) |
 | `aec` | it sends a second capture of each call, `AUDIO_IN_AEC` |
 | `aec_lead_samples` | how far the second capture runs ahead of the first (absent: the VPE's, 905) |
 | `monitor_aec` | it sends the second capture while monitored too, `AUDIO_MONITOR_AEC` |
@@ -90,9 +93,21 @@ What the satellite is and can do. Absent fields are false or unknown.
 | `monitor` | it can stream outside calls (`MONITOR`) |
 | `intercom` | it can be joined to another satellite (`MONITOR` with `intercom`) |
 
+**Protocol 2** had no `output_sample_rates` or `CONFIG`: `AUDIO_OUT` is 16 kHz.
+
 **Protocol 1** (the Voice Labs firmware) had no `model`, `firmware`,
 `esphome`, `aec` or `wake_format`: a protocol 1 satellite is a VPE, with both
 captures and `mixednet` wake words.
+
+## CONFIG
+
+`{"output_sample_rate": 48000}`: `AUDIO_OUT` comes at this rate from now on,
+for this connection. The app sends it once, after `HELLO` and before any
+audio, when it wants one of `output_sample_rates` other than 16000 (a
+satellite whose speaker runs at 48 kHz then plays the app's audio without
+resampling it). A rate the satellite didn't offer is refused and logged.
+Without `CONFIG` (an app from before protocol 3), and on every new connection,
+`AUDIO_OUT` is 16 kHz.
 
 ## Calls
 
@@ -143,7 +158,7 @@ the satellite reads the socket no faster than it can buffer. `AUDIO_OUT_END`
 ends a stream; `PLAYBACK_DRAINED` follows once it has played.
 
 `STATUS`, sent every 200 ms or so during a call, is for diagnosis: `free_bytes`,
-`queued_bytes`, `queued_ms`, `speaker_busy`, `mic_dropped_bytes`,
+`queued_bytes`, `queued_ms` (at the output rate), `speaker_busy`, `mic_dropped_bytes`,
 `aec_dropped_bytes`.
 
 ## Events

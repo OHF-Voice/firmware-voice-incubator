@@ -11,6 +11,7 @@
 #include "esphome/components/socket/socket.h"
 #include "esphome/components/speaker/speaker.h"
 
+#include <algorithm>
 #include <atomic>
 #include <cstdint>
 #include <map>
@@ -20,6 +21,8 @@
 
 namespace esphome::voice_incubator {
 
+/// The microphone's rate, and playback's unless the app chooses another
+/// (CONFIG ``output_sample_rate``, one of HELLO's ``output_sample_rates``).
 static constexpr uint32_t SAMPLE_RATE = 16000;
 static constexpr uint8_t BYTES_PER_SAMPLE = 2;
 static constexpr uint32_t BYTE_RATE = SAMPLE_RATE * BYTES_PER_SAMPLE;
@@ -57,6 +60,9 @@ enum class MessageType : uint8_t {
   /// microphone outside calls (someone is listening live, or another
   /// satellite is joined by the intercom: the first capture alone), or stop.
   MONITOR = 0x14,
+  /// {"output_sample_rate": 48000}: how the app's AUDIO_OUT is sampled from
+  /// now on, for this connection (one of HELLO's ``output_sample_rates``).
+  CONFIG = 0x15,
   MODEL_START = 0x20,
   MODEL_DATA = 0x21,
   MODEL_END = 0x22,
@@ -102,6 +108,9 @@ class VoiceIncubator : public Component {
   void set_port(uint16_t port) { this->port_ = port; }
   void set_preroll_ms(uint32_t ms) { this->preroll_ms_ = ms; }
   void set_output_buffer_ms(uint32_t ms) { this->output_buffer_ms_ = ms; }
+  /// The highest rate AUDIO_OUT may come in (HELLO ``output_sample_rates``):
+  /// the speaker's, so the app's audio needs no resampling here.
+  void set_max_output_rate(uint32_t rate) { this->max_output_rate_ = rate; }
   void set_call_timeout_ms(uint32_t ms) { this->call_timeout_ms_ = ms; }
   void set_status_interval_ms(uint32_t ms) { this->status_interval_ms_ = ms; }
   void set_volume(float volume) { this->volume_ = volume; }
@@ -173,6 +182,16 @@ class VoiceIncubator : public Component {
   /// Drops the oldest audio so the ring holds exactly `target` bytes.
   size_t trim_preroll_(ring_buffer::RingBuffer *ring, size_t target);
   void pump_speaker_();
+  void handle_config_(const uint8_t *payload, size_t len);
+  /// AUDIO_OUT at ``rate`` from now on: the speaker is told, and what was
+  /// queued at the old rate is dropped.
+  void set_output_rate_(uint32_t rate);
+  uint32_t output_byte_rate_() const { return this->output_rate_ * BYTES_PER_SAMPLE; }
+  /// output_buffer's worth at the output rate: what is queued at most.
+  size_t output_limit_bytes_() const {
+    return std::min<size_t>(this->out_ring_->free() + this->out_ring_->available(),
+                            static_cast<size_t>(this->output_buffer_ms_) * this->output_byte_rate_() / 1000);
+  }
   void send_status_();
   void check_playback_drained_();
   void set_monitoring_(bool active, bool intercom = false);
@@ -228,6 +247,10 @@ class VoiceIncubator : public Component {
 
   uint32_t preroll_ms_{1500};
   uint32_t output_buffer_ms_{1000};
+  uint32_t max_output_rate_{SAMPLE_RATE};
+  /// How AUDIO_OUT is sampled on this connection (CONFIG); an app that says
+  /// nothing sends SAMPLE_RATE.
+  uint32_t output_rate_{SAMPLE_RATE};
   uint32_t call_timeout_ms_{30000};
   uint32_t status_interval_ms_{200};
   uint32_t call_started_at_{0};

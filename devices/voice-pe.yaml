@@ -621,12 +621,18 @@ speaker:
       - id: announcement_mixing_input
         timeout: never
 
-  # voice_incubator speaks 16 kHz mono; the hardware wants 48 kHz.
+  # The app's audio: 48 kHz from an app that chooses it (voice_incubator's
+  # output_sample_rate), passed through; 16 kHz from older apps, resampled with
+  # more taps and filters than ESPHome's default 16 and 16, whose images of the
+  # speech above 8 kHz come out at -31 dB (64 and 48: -69 dB; 48 filters also
+  # land exactly on the 1/3-sample steps of 16 to 48 kHz).
   - platform: resampler
     id: call_speaker
     output_speaker: call_mixing_input
     sample_rate: 48000
     bits_per_sample: 16
+    taps: 64
+    filters: 48
   - platform: resampler
     id: media_resampling_speaker
     output_speaker: media_mixing_input
@@ -1047,6 +1053,8 @@ voice_incubator:
   port: 6055
   preroll: 1.5s
   output_buffer: 1s
+  # The speaker's own rate: the app's replies are played as it made them.
+  output_sample_rate: 48000
   call_timeout: 30s
   # The onboard amp distorts above roughly 85%.
   volume: 70%
