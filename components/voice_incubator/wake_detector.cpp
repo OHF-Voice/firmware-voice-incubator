@@ -131,12 +131,15 @@ bool WakeDetector::begin_model(const ModelConfig &config, size_t size) {
   if (config.sliding_window_size == 0)
     return false;
 
+  // Room to start the blob on a 16-byte boundary, which the heap does not promise.
   RAMAllocator<uint8_t> allocator;
-  this->staging_blob_ = allocator.make_unique_array_for_overwrite(size);
+  this->staging_blob_ = allocator.make_unique_array_for_overwrite(size + 15);
   if (this->staging_blob_ == nullptr) {
     ESP_LOGE(TAG, "No memory for a %zu byte model", size);
     return false;
   }
+  this->staging_data_ = reinterpret_cast<uint8_t *>(
+      (reinterpret_cast<uintptr_t>(this->staging_blob_.get()) + 15) & ~uintptr_t{15});
   this->staging_config_ = config;
   this->staging_size_ = size;
   this->staging_filled_ = 0;
@@ -146,7 +149,7 @@ bool WakeDetector::begin_model(const ModelConfig &config, size_t size) {
 bool WakeDetector::append_model(const uint8_t *data, size_t len) {
   if (this->staging_blob_ == nullptr || this->staging_filled_ + len > this->staging_size_)
     return false;
-  std::memcpy(this->staging_blob_.get() + this->staging_filled_, data, len);
+  std::memcpy(this->staging_data_ + this->staging_filled_, data, len);
   this->staging_filled_ += len;
   return true;
 }
@@ -165,11 +168,13 @@ bool WakeDetector::finish_model(std::string *error) {
   auto model = make_unique<WakeModel>();
   model->config = this->staging_config_;
   model->blob = std::move(this->staging_blob_);
+  model->blob_data = this->staging_data_;
   model->blob_size = this->staging_size_;
+  this->staging_data_ = nullptr;
   this->staging_size_ = 0;
   this->staging_filled_ = 0;
 
-  if (!model->parsed.parse(model->blob.get(), model->blob_size)) {
+  if (!model->parsed.parse(model->blob_data, model->blob_size)) {
     *error = model->parsed.error();
     return false;
   }
@@ -181,6 +186,9 @@ bool WakeDetector::finish_model(std::string *error) {
     *error = "arena allocation failed";
     return false;
   }
+  // Fewer than usual means a blob from an app that predates 16-byte alignment.
+  ESP_LOGD(TAG, "Model '%s': %u of %u ops on esp-nn, %zu bytes of scratch", model->config.id.c_str(),
+           model->stream.executor.esp_nn_ops(), model->parsed.model()->num_ops, model->stream.executor.scratch_size());
 
   const std::string &id = model->config.id;
   {
@@ -204,6 +212,7 @@ bool WakeDetector::finish_model(std::string *error) {
 
 void WakeDetector::abort_model() {
   this->staging_blob_.reset();
+  this->staging_data_ = nullptr;
   this->staging_size_ = 0;
   this->staging_filled_ = 0;
 }

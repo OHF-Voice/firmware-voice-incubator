@@ -98,6 +98,9 @@ struct WakeModel {
   ModelConfig config;
   /// The received blob. Op weights point into it, so it outlives the executors.
   RAMUniquePtr<uint8_t[]> blob;
+  /// Where the blob starts inside `blob`: 16-byte aligned, so the packer's
+  /// aligned weights stay aligned for esp-nn.
+  uint8_t *blob_data{nullptr};
   size_t blob_size{0};
   MixedNetBlob parsed;
   /// On the wake microphone.
@@ -201,6 +204,7 @@ class WakeDetector {
   // Staging for an in-flight transfer; only touched from the main loop.
   ModelConfig staging_config_;
   RAMUniquePtr<uint8_t[]> staging_blob_;
+  uint8_t *staging_data_{nullptr};  // 16-byte aligned, inside staging_blob_
   size_t staging_size_{0};
   size_t staging_filled_{0};
 

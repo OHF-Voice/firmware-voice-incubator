@@ -1,5 +1,6 @@
-// Vendored from https://github.com/synesthesiam/mixednet-executor (namespace changed).
-// Edit there, not here.
+// Vendored from https://github.com/synesthesiam/mixednet-executor, with the
+// namespace changed and the requantization tables read from the received blob
+// (mixednet_blob.cpp) instead of derived from scales. Keep the kernels in step.
 #pragma once
 
 #include <cstddef>
@@ -80,11 +81,28 @@ class MixedNetExecutor {
 
   size_t arena_size() const { return this->arena_size_; }
 
+#ifdef MIXEDNET_USE_ESP_NN
+  /// Select which op kinds may go to esp-nn, before setup(). For A/B testing the
+  /// kernels; the defaults (dense only) are what production wants.
+  void set_backend(bool dense_esp_nn, bool depthwise_esp_nn) {
+    this->dense_esp_nn_ = dense_esp_nn;
+    this->depthwise_esp_nn_ = depthwise_esp_nn;
+  }
+#endif
+
+  /// How many ops setup() routed to esp-nn (zero without it). An op stays on the
+  /// scalar kernel when esp-nn cannot read it in place: weights or input not
+  /// 16-byte aligned (a blob from an older packer), or a channel-split window.
+  uint8_t esp_nn_ops() const { return this->esp_nn_ops_; }
+
+  /// Bytes of esp-nn scratch allocated alongside the arena (zero without esp-nn).
+  size_t scratch_size() const { return this->scratch_size_; }
+
   /// The int8 logit of the most recent invoke, before the sigmoid lookup.
   int8_t last_logit() const { return this->last_logit_; }
 
  protected:
-  int8_t *buffer_(uint8_t index) { return this->arena_.get() + this->offsets_[index]; }
+  int8_t *buffer_(uint8_t index) { return this->arena_ + this->offsets_[index]; }
 
  public:
 #ifdef MIXEDNET_DEBUG
@@ -96,14 +114,31 @@ class MixedNetExecutor {
 
   void ring_push_(const MixedNetOp &op, const int8_t *features);
   void copy_(const MixedNetOp &op);
-  void dense_(const MixedNetOp &op);
-  void depthwise_(const MixedNetOp &op);
+  void dense_(const MixedNetOp &op, uint8_t index);
+  void depthwise_(const MixedNetOp &op, uint8_t index);
   void max_pool_(const MixedNetOp &op);
+  bool choose_kernels_();
 
   const MixedNetModel *model_{nullptr};
-  std::unique_ptr<int8_t[]> arena_;
+  std::unique_ptr<int8_t[]> arena_storage_;
+  int8_t *arena_{nullptr};  // 16-byte aligned view into arena_storage_
   std::unique_ptr<uint16_t[]> offsets_;
   size_t arena_size_{0};
+  /// Per op: nonzero to run it on esp-nn.
+  std::unique_ptr<uint8_t[]> esp_nn_;
+  uint8_t esp_nn_ops_{0};
+  size_t scratch_size_{0};
+#ifdef MIXEDNET_USE_ESP_NN
+  struct ScratchFree {
+    void operator()(void *p) const;
+  };
+  std::unique_ptr<uint8_t, ScratchFree> scratch_;
+  bool dense_esp_nn_{true};
+  // Off: esp-nn has no assembly for a [taps x 1] depthwise, and its C kernel
+  // lost to the scalar one, on the Voice PE (60-70 us more per invoke for
+  // okay_nabu and stop) as on plain ESP32.
+  bool depthwise_esp_nn_{false};
+#endif
   int8_t last_logit_{0};
 };
 

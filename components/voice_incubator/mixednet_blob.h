@@ -15,7 +15,8 @@ namespace esphome::voice_incubator {
 /// the small op and buffer tables (so they land aligned in internal RAM) and
 /// points the weight pointers straight into the blob, which is where the 45 kB
 /// that actually matter stay. The caller owns the blob and must keep it alive
-/// and 4-byte aligned for as long as the model is in use.
+/// and 4-byte aligned for as long as the model is in use; 16-byte aligned lets
+/// the executor run the packer's 16-byte aligned weights on esp-nn.
 class MixedNetBlob {
  public:
   /// Validates and binds. Returns false and sets error() on a malformed blob.

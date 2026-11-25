@@ -195,6 +195,10 @@ async def to_code(config):
     # The spectrogram frontend the models were trained against. mixednet-executor
     # needs nothing else at runtime, so no TFLite interpreter is pulled in.
     esp32.add_idf_component(name="esphome/esp-micro-speech-features", ref="1.2.3")
+    # esp-nn's kernels for the dense and depthwise ops (ESP32-S3 assembly), the
+    # version micro_wake_word pins so the two never ask for different ones.
+    esp32.add_idf_component(name="espressif/esp-nn", ref="1.1.2")
+    cg.add_build_flag("-DMIXEDNET_USE_ESP_NN")
 
     spk = await cg.get_variable(config[CONF_SPEAKER])
     cg.add(var.set_speaker(spk))
